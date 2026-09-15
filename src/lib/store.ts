@@ -1,9 +1,18 @@
 import { promises as fs } from "fs";
+import os from "os";
 import path from "path";
 import type { Article, CacheState } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const CACHE_PATH = path.join(DATA_DIR, "cache.json");
+function dataDir(): string {
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join(os.tmpdir(), "cyberguard-web");
+  }
+  return path.join(process.cwd(), "data");
+}
+
+function cachePath(): string {
+  return path.join(dataDir(), "cache.json");
+}
 
 const EMPTY: CacheState = {
   articles: [],
@@ -13,7 +22,7 @@ const EMPTY: CacheState = {
 
 export async function loadCache(): Promise<CacheState> {
   try {
-    const raw = await fs.readFile(CACHE_PATH, "utf8");
+    const raw = await fs.readFile(cachePath(), "utf8");
     const parsed = JSON.parse(raw) as CacheState;
     return {
       articles: parsed.articles ?? [],
@@ -26,8 +35,8 @@ export async function loadCache(): Promise<CacheState> {
 }
 
 export async function saveCache(state: CacheState): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  await fs.writeFile(CACHE_PATH, JSON.stringify(state, null, 2), "utf8");
+  await fs.mkdir(dataDir(), { recursive: true });
+  await fs.writeFile(cachePath(), JSON.stringify(state, null, 2), "utf8");
 }
 
 export async function mergeArticles(incoming: Article[]): Promise<CacheState> {

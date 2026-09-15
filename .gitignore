@@ -6,4 +6,6 @@ data
 .DS_Store
 .env*
 tsconfig.tsbuildinfo
+.vercel
+
 

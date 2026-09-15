@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
-import { loadCache } from "@/lib/store";
+import { loadCacheOrCollect } from "@/lib/collect";
 import { renderReportHtml } from "@/lib/report";
 import { buildReportDocx } from "@/lib/exportDocx";
 import { buildReportPdf } from "@/lib/exportPdf";
 import { buildExactPair } from "@/lib/exportExact";
 import { buildReportPayload } from "@/lib/reportPayload";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 function fileResponse(bytes: Uint8Array, mime: string, filename: string) {
   const safe = filename.replace(/"/g, "");
@@ -22,7 +26,7 @@ function fileResponse(bytes: Uint8Array, mime: string, filename: string) {
 
 export async function GET(req: Request) {
   const format = new URL(req.url).searchParams.get("format") ?? "html";
-  const cache = await loadCache();
+  const cache = await loadCacheOrCollect();
 
   if (format === "html") {
     const html = renderReportHtml(cache.articles, cache.agencies);

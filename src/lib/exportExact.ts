@@ -101,7 +101,7 @@ async function fillWithWord(payload: ReportPayload): Promise<ExactPair> {
 }
 
 export async function buildExactPair(payload: ReportPayload): Promise<ExactPair | null> {
-  if (process.platform !== "win32") return null;
+  if (process.env.VERCEL || process.platform !== "win32") return null;
   try {
     await fs.access(templatePath());
     await fs.access(scriptPath());
