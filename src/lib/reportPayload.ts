@@ -1,5 +1,6 @@
-import type { AgencyItem, Article } from "./types";
+import { polishGoogleNewsArticle } from "./googleNews";
 import { top10 } from "./rank";
+import type { AgencyItem, Article } from "./types";
 
 export type ReportItem = {
   title: string;
@@ -99,11 +100,14 @@ export function normalizeExternalAlertTitle(title: string, source: string, url: 
 }
 
 function asItem(item: { title: string; source: string; url: string }, agency = false): ReportItem {
-  const title = agency ? normalizeExternalAlertTitle(item.title, item.source, item.url) : cleanSpaces(item.title);
+  const polished = agency ? item : polishGoogleNewsArticle(item);
+  const title = agency
+    ? normalizeExternalAlertTitle(polished.title, polished.source, polished.url)
+    : cleanSpaces(polished.title);
   return {
     title: title || "Nil",
-    source: cleanSpaces(item.source) || "Nil",
-    url: cleanSpaces(item.url) || "Nil",
+    source: cleanSpaces(polished.source) || "Nil",
+    url: cleanSpaces(polished.url) || "Nil",
   };
 }
 

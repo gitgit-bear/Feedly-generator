@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-import { loadCache } from "@/lib/store";
-import { isToday, top10 } from "@/lib/rank";
+import { asSnapshot, loadCacheOrCollect } from "@/lib/collect";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function GET() {
-  const cache = await loadCache();
-  return NextResponse.json({
-    ...cache,
-    todayCount: cache.articles.filter((a) => isToday(a.pubDate || a.fetchedAt)).length,
-    top10: top10(cache.articles),
-  });
+  const cache = await loadCacheOrCollect();
+  return NextResponse.json(asSnapshot(cache));
 }

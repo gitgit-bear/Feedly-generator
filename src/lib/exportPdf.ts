@@ -1,19 +1,44 @@
 import fs from "fs";
 import path from "path";
+import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, PDFFont, PDFImage, RGB, StandardFonts, rgb } from "pdf-lib";
+import { addUriLink } from "./pdfLinks";
 import type { ReportItem, ReportPayload } from "./reportPayload";
 
 const TITLE = rgb(79 / 255, 79 / 255, 79 / 255);
 const SOURCE = rgb(18 / 255, 162 / 255, 198 / 255);
 const LINK = rgb(0, 0, 1);
-const BLACK = rgb(0.1, 0.1, 0.1);
+const BLACK = rgb(0, 0, 0);
 const DATE = rgb(51 / 255, 204 / 255, 51 / 255);
+
+const PAGE: [number, number] = [595.3, 841.9];
+const MARGIN = { top: 49.65, bottom: 35.45, left: 28.35, right: 28.3 };
+const TABLE_W = 545.4;
+const NUM_W = 33.75;
+const BODY_W = TABLE_W - NUM_W;
+const PAD_X = 5.4;
+const PAD_Y = 2;
+const SIZE = 13;
+const LINE_H = 16;
+const HEADER_DIST = 28.35;
+const HEADER_W = 545;
+const HEADER_H = 47.7;
+const DATE_SIZE = 12;
+const DATE_LEFT = 381.9;
+const DATE_TOP = 13.6;
 
 type Fonts = {
   body: PDFFont;
   heading: PDFFont;
   italic: PDFFont;
 };
+
+type Line = { text: string; font: PDFFont; color: RGB; underline?: boolean; href?: string };
+
+type TableRow =
+  | { kind: "heading"; text: string }
+  | { kind: "spacer" }
+  | { kind: "item"; n: number; item: ReportItem | null; section: boolean };
 
 function latin(text: string): string {
   return Array.from(text || "")
@@ -65,123 +90,205 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
   return lines.length ? lines : [""];
 }
 
-function loadHeaderPng(): Buffer | null {
+function readTemplate(name: string): Buffer | null {
   try {
-    return fs.readFileSync(path.join(process.cwd(), "templates", "feedly_header.png"));
+    return fs.readFileSync(path.join(process.cwd(), "templates", name));
   } catch {
     return null;
   }
 }
 
-export async function buildReportPdf(payload: ReportPayload): Promise<Uint8Array> {
-  const pdf = await PDFDocument.create();
-  const fonts: Fonts = {
-    body: await pdf.embedFont(StandardFonts.TimesRoman),
-    heading: await pdf.embedFont(StandardFonts.TimesRomanBold),
-    italic: await pdf.embedFont(StandardFonts.TimesRomanItalic),
-  };
-  let banner: PDFImage | null = null;
-  const png = loadHeaderPng();
-  if (png) {
+async function embedHeader(pdf: PDFDocument): Promise<PDFImage | null> {
+  const jpg = readTemplate("feedly_header.jpg") ?? readTemplate(path.join("word", "media", "image1.jpeg"));
+  if (jpg) {
     try {
-      banner = await pdf.embedPng(png);
+      return await pdf.embedJpg(jpg);
     } catch {
-      banner = null;
+      /* fall through */
     }
   }
-
-  const pageSize: [number, number] = [595.3, 841.9];
-  const margin = { top: 49.6, bottom: 35.4, left: 28.35, right: 28.35 };
-  const size = 13;
-  const lineH = 16;
-  let page = pdf.addPage(pageSize);
-  let y = page.getHeight() - margin.top;
-
-  const ensure = (need: number) => {
-    if (y - need < margin.bottom) {
-      page = pdf.addPage(pageSize);
-      y = page.getHeight() - margin.top;
+  const png = readTemplate("feedly_header.png");
+  if (png) {
+    try {
+      return await pdf.embedPng(png);
+    } catch {
+      return null;
     }
-  };
+  }
+  return null;
+}
 
-  const drawLines = (lines: string[], font: PDFFont, color: RGB, x: number, underline = false) => {
-    for (const line of lines) {
-      ensure(lineH);
-      page.drawText(line, { x, y: y - size, size, font, color });
-      if (underline) {
-        const w = font.widthOfTextAtSize(line, size);
-        page.drawLine({
-          start: { x, y: y - size - 1 },
-          end: { x: x + w, y: y - size - 1 },
-          thickness: 0.6,
-          color,
-        });
-      }
-      y -= lineH;
+async function embedFonts(pdf: PDFDocument): Promise<Fonts> {
+  const heading = await pdf.embedFont(StandardFonts.Helvetica);
+  const regular = readTemplate(path.join("fonts", "Caladea-Regular.ttf"));
+  const italicFile = readTemplate(path.join("fonts", "Caladea-Italic.ttf"));
+  if (regular && italicFile) {
+    try {
+      pdf.registerFontkit(fontkit);
+      return {
+        body: await pdf.embedFont(regular),
+        italic: await pdf.embedFont(italicFile),
+        heading,
+      };
+    } catch {
+      /* bundled TTF failed; Times is the fallback serif */
     }
+  }
+  return {
+    body: await pdf.embedFont(StandardFonts.TimesRoman),
+    italic: await pdf.embedFont(StandardFonts.TimesRomanItalic),
+    heading,
   };
+}
 
-  if (banner) {
-    const width = 545;
-    const height = (banner.height / banner.width) * width;
-    page.drawImage(banner, {
-      x: margin.left,
-      y: y - height,
-      width,
-      height,
-    });
-    const date = ` ${payload.dateStamp}`;
-    const dateSize = 12;
-    page.drawText(date, {
-      x: page.getWidth() - margin.right - fonts.heading.widthOfTextAtSize(date, dateSize) - 8,
-      y: y - 28,
-      size: dateSize,
+function itemLines(item: ReportItem | null, section: boolean, fonts: Fonts, maxW: number): Line[] {
+  if (!item) {
+    return [{ text: "Nil", font: fonts.italic, color: TITLE }];
+  }
+  const lines: Line[] = wrap(item.title, fonts.body, SIZE, maxW).map((text) => ({
+    text,
+    font: fonts.body,
+    color: TITLE,
+  }));
+  if (!section) {
+    for (const text of wrap(`${item.source} `, fonts.body, SIZE, maxW)) {
+      lines.push({ text, font: fonts.body, color: SOURCE });
+    }
+  }
+  for (const text of wrap(item.url, fonts.body, SIZE, maxW)) {
+    lines.push({ text, font: fonts.body, color: LINK, underline: true, href: item.url });
+  }
+  lines.push({ text: " ", font: fonts.body, color: TITLE });
+  return lines;
+}
+
+function rowHeight(lines: number): number {
+  return Math.max(LINE_H + PAD_Y * 2, lines * LINE_H + PAD_Y * 2);
+}
+
+export async function buildReportPdf(payload: ReportPayload): Promise<Uint8Array> {
+  const pdf = await PDFDocument.create();
+  const fonts = await embedFonts(pdf);
+  const banner = await embedHeader(pdf);
+
+  let page = pdf.addPage(PAGE);
+  let y = page.getHeight() - MARGIN.top;
+  const tableX = MARGIN.left;
+  const textW = BODY_W - PAD_X * 2;
+
+  const drawHeader = () => {
+    const top = page.getHeight() - HEADER_DIST;
+    if (banner) {
+      const imageY = top - HEADER_H;
+      page.drawImage(banner, {
+        x: tableX,
+        y: imageY,
+        width: HEADER_W,
+        height: HEADER_H,
+      });
+      const date = ` ${payload.dateStamp}`;
+      page.drawText(date, {
+        x: tableX + DATE_LEFT,
+        y: top - DATE_TOP - DATE_SIZE * 0.78,
+        size: DATE_SIZE,
+        font: fonts.heading,
+        color: DATE,
+      });
+      y = imageY - 8;
+      return;
+    }
+    page.drawText(` ${payload.dateStamp}`, {
+      x: tableX + TABLE_W - fonts.heading.widthOfTextAtSize(` ${payload.dateStamp}`, DATE_SIZE) - 8,
+      y: top - DATE_SIZE,
+      size: DATE_SIZE,
       font: fonts.heading,
       color: DATE,
     });
-    y -= height + 10;
-  } else {
-    page.drawText(payload.dateStamp, {
-      x: page.getWidth() - margin.right - fonts.body.widthOfTextAtSize(payload.dateStamp, 12),
-      y: y - 12,
-      size: 12,
-      font: fonts.body,
-      color: DATE,
-    });
-    y -= 28;
-  }
-
-  const contentX = margin.left + 34;
-  const maxW = page.getWidth() - contentX - margin.right;
-
-  const drawItem = (n: number, item: ReportItem | null, section: boolean) => {
-    ensure(lineH * 4);
-    page.drawText(`${n}.`, { x: margin.left, y: y - size, size, font: fonts.heading, color: BLACK });
-    if (!item) {
-      page.drawText("Nil", { x: contentX, y: y - size, size, font: fonts.italic, color: TITLE });
-      y -= lineH * 2;
-      return;
-    }
-    drawLines(wrap(item.title, fonts.body, size, maxW), fonts.body, TITLE, contentX);
-    if (!section) {
-      drawLines(wrap(`${item.source} `, fonts.body, size, maxW), fonts.body, SOURCE, contentX);
-    }
-    drawLines(wrap(item.url, fonts.body, size, maxW), fonts.body, LINK, contentX, true);
-    y -= 6;
+    y = top - 28;
   };
 
-  page.drawText("TOP 10 INTELLIGENCE", { x: margin.left, y: y - size, size, font: fonts.heading, color: BLACK });
-  y -= lineH * 1.4;
-  payload.topItems.forEach((item, i) => drawItem(i + 1, item, false));
+  const newPage = () => {
+    page = pdf.addPage(PAGE);
+    drawHeader();
+  };
 
-  for (const section of payload.sections) {
-    y -= 8;
-    ensure(lineH * 3);
-    page.drawText(section.heading, { x: margin.left, y: y - size, size, font: fonts.heading, color: BLACK });
-    y -= lineH * 1.4;
+  const ensure = (need: number) => {
+    if (y - need < MARGIN.bottom) newPage();
+  };
+
+  const drawLines = (lines: Line[], x: number, top: number) => {
+    let cy = top - PAD_Y - SIZE;
+    for (const line of lines) {
+      page.drawText(line.text, { x, y: cy, size: SIZE, font: line.font, color: line.color });
+      if (line.underline) {
+        const w = line.font.widthOfTextAtSize(line.text, SIZE);
+        page.drawLine({
+          start: { x, y: cy - 1 },
+          end: { x: x + w, y: cy - 1 },
+          thickness: 0.6,
+          color: line.color,
+        });
+        if (line.href) addUriLink(page, x, cy - 3, Math.max(w, 8), SIZE + 4, line.href);
+      }
+      cy -= LINE_H;
+    }
+  };
+
+  const drawHeading = (text: string) => {
+    const h = rowHeight(1);
+    ensure(h);
+    page.drawText(latin(text), {
+      x: tableX,
+      y: y - PAD_Y - SIZE,
+      size: SIZE,
+      font: fonts.heading,
+      color: BLACK,
+    });
+    y -= h;
+  };
+
+  const drawItem = (row: Extract<TableRow, { kind: "item" }>) => {
+    const lines = itemLines(row.item, row.section, fonts, textW);
+    const h = rowHeight(lines.length);
+    ensure(h);
+    page.drawText(`${row.n}.`, {
+      x: tableX,
+      y: y - PAD_Y - SIZE,
+      size: SIZE,
+      font: fonts.heading,
+      color: BLACK,
+    });
+    drawLines(lines, tableX + NUM_W, y);
+    y -= h;
+  };
+
+  const drawTable = (rows: TableRow[], gapAfter = 0) => {
+    for (const row of rows) {
+      if (row.kind === "heading") drawHeading(row.text);
+      else if (row.kind === "spacer") y -= LINE_H;
+      else drawItem(row);
+    }
+    y -= gapAfter;
+  };
+
+  drawHeader();
+
+  drawTable(
+    [
+      { kind: "heading", text: "TOP 10 INTELLIGENCE" },
+      ...payload.topItems.map((item, i) => ({ kind: "item" as const, n: i + 1, item, section: false })),
+    ],
+    8,
+  );
+
+  const sectionRows: TableRow[] = [];
+  payload.sections.forEach((section, index) => {
+    sectionRows.push({ kind: "heading", text: section.heading });
     const items = section.items.length ? section.items : [null];
-    items.forEach((item, i) => drawItem(i + 1, item, true));
-  }
+    items.forEach((item, i) => sectionRows.push({ kind: "item", n: i + 1, item, section: true }));
+    if (index < payload.sections.length - 1) sectionRows.push({ kind: "spacer" });
+  });
+  drawTable(sectionRows);
 
   return pdf.save();
 }

@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgencyItem, Article, CacheState } from "@/lib/types";
-import { isToday, relevanceScore, top10 } from "@/lib/rank";
+import { isToday, relevanceScore, top10, dedupeStories } from "@/lib/rank";
 import { exportReportFormat, isMobileBrowser, reportDownloadUrl, type ExportKind } from "@/lib/saveReport";
 import { newsletterFileStamp } from "@/lib/reportPayload";
+import { polishGoogleNewsArticle } from "@/lib/googleNews";
 
 type Chip = "today" | "all" | "unread" | "breaches" | "vulns";
 
@@ -42,6 +43,33 @@ function resetTilt(el: HTMLElement) {
   el.style.transform = "";
 }
 
+function compactText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function shouldShowDescription(title: string, description: string, source: string): boolean {
+  const desc = compactText(description);
+  if (!desc) return false;
+  const head = compactText(title);
+  if (!head) return true;
+  if (desc === head) return false;
+  const withSource = compactText(`${title} ${source}`);
+  if (desc === withSource) return false;
+  if (desc.startsWith(head) && desc.length <= head.length + compactText(source).length + 12) return false;
+  const words = desc.split(" ");
+  if (words.length <= 12) {
+    const titleWords = new Set(head.split(" "));
+    const overlap = words.filter((word) => titleWords.has(word)).length / words.length;
+    if (overlap >= 0.85) return false;
+  }
+  return true;
+}
+
 function relative(iso: string | null): string {
   if (!iso) return "unknown";
   const t = new Date(iso).getTime();
@@ -54,76 +82,211 @@ function relative(iso: string | null): string {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
+type RefreshEvent =
+  | { type: "start"; total: number }
+  | { type: "progress"; done: number; total: number; source: string; ok?: boolean }
+  | { type: "done"; snapshot?: Snapshot }
+  | { type: "error"; message?: string };
+
+async function readRefreshStream(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (event: RefreshEvent) => void,
+): Promise<Snapshot> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let snapshot: Snapshot | null = null;
+
+  const handleBlock = (block: string) => {
+    const line = block.split(/\r?\n/).find((item) => item.startsWith("data:"));
+    if (!line) return;
+    const raw = line.replace(/^data:\s*/, "").trim();
+    if (!raw) return;
+    const event = JSON.parse(raw) as RefreshEvent;
+    onEvent(event);
+    if (event.type === "done" && event.snapshot) snapshot = event.snapshot;
+    if (event.type === "error") throw new Error(event.message || "Refresh failed");
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    let idx = buffer.indexOf("\n\n");
+    while (idx >= 0) {
+      handleBlock(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+      idx = buffer.indexOf("\n\n");
+    }
+    if (done) {
+      if (buffer.trim()) handleBlock(buffer);
+      break;
+    }
+  }
+
+  if (!snapshot) throw new Error("Refresh returned no data");
+  return snapshot;
+}
+
 export default function NewsApp() {
   const [data, setData] = useState<Snapshot | null>(null);
+  const [ready, setReady] = useState(false);
   const [chip, setChip] = useState<Chip>("today");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [pct, setPct] = useState(0);
-  const [status, setStatus] = useState("Loading cache…");
+  const [status, setStatus] = useState("Connecting to feeds…");
+  const busyRef = useRef(false);
+  const realProgressRef = useRef(false);
+
+  const applySnapshot = useCallback((snap: Snapshot) => {
+    const articles = dedupeStories((snap.articles ?? []).map(polishGoogleNewsArticle));
+    const next: Snapshot = {
+      ...snap,
+      articles,
+      todayCount: articles.filter((a) => isToday(a.pubDate || a.fetchedAt)).length,
+      top10: top10(articles),
+    };
+    setData(next);
+    try {
+      localStorage.setItem("cyberguard-snapshot-v1", JSON.stringify(next));
+    } catch {
+      /* quota / private mode */
+    }
+    if ((next.todayCount ?? 0) === 0 && next.articles.length > 0) {
+      setChip("all");
+    }
+  }, []);
 
   const load = useCallback(async () => {
     const res = await fetch("/api/articles", { cache: "no-store" });
     const json = (await res.json()) as Snapshot;
-    setData(json);
-  }, []);
+    applySnapshot(json);
+  }, [applySnapshot]);
+
+  const pullFeeds = useCallback(async () => {
+    setStatus("Loading feeds…");
+    const res = await fetch("/api/refresh", {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Refresh failed (${res.status})`);
+
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const json = (await res.json()) as { snapshot?: Snapshot };
+      if (!json.snapshot) throw new Error("Refresh returned no data");
+      applySnapshot(json.snapshot);
+      realProgressRef.current = true;
+      setPct(100);
+      setStatus("Ready");
+      return json.snapshot;
+    }
+
+    if (!res.body) throw new Error("Refresh returned no data");
+
+    const snapshot = await readRefreshStream(res.body, (event) => {
+      realProgressRef.current = true;
+      if (event.type === "start") {
+        setPct(4);
+        setStatus(`Refreshing 0/${event.total}…`);
+        return;
+      }
+      if (event.type === "progress") {
+        const next = event.total ? Math.round((event.done / event.total) * 100) : 0;
+        setPct(Math.min(99, Math.max(4, next)));
+        setStatus(
+          event.ok === false
+            ? `Refreshing ${event.done}/${event.total} · ${event.source} failed`
+            : `Refreshing ${event.done}/${event.total} · ${event.source}`,
+        );
+      }
+    });
+
+    applySnapshot(snapshot);
+    setPct(100);
+    setStatus("Ready");
+    return snapshot;
+  }, [applySnapshot]);
 
   const refresh = useCallback(async () => {
-    if (busy) return;
+    if (!ready || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setPct(0);
     setStatus("Refreshing feeds… 0%");
-    const res = await fetch("/api/refresh", { method: "POST" });
-    if (!res.body) {
-      setBusy(false);
+    realProgressRef.current = false;
+    try {
+      await pullFeeds();
+      setStatus("Up to date");
+    } catch {
       setStatus("Refresh failed");
-      return;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+      setTimeout(() => setPct(0), 800);
     }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const chunks = buf.split("\n\n");
-      buf = chunks.pop() ?? "";
-      for (const chunk of chunks) {
-        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
-        if (!line) continue;
-        const msg = JSON.parse(line.slice(6)) as {
-          type: string;
-          done?: number;
-          total?: number;
-          source?: string;
-          error?: string | null;
-        };
-        if (msg.type === "progress" && msg.total) {
-          const next = Math.round((100 * (msg.done ?? 0)) / msg.total);
-          setPct(next);
-          setStatus(`Refreshing… ${next}% — ${msg.source ?? ""}`);
-        }
-        if (msg.type === "done") {
-          setPct(100);
-          setStatus("Up to date");
-        }
-      }
-    }
-    await load();
-    setBusy(false);
-    setTimeout(() => setPct(0), 800);
-  }, [busy, load]);
+  }, [pullFeeds, ready]);
 
   useEffect(() => {
+    let cancelled = false;
+    let stored: Snapshot | null = null;
+    try {
+      const raw = localStorage.getItem("cyberguard-snapshot-v1");
+      stored = raw ? (JSON.parse(raw) as Snapshot) : null;
+      if (!Array.isArray(stored?.articles) || !stored.articles.length) stored = null;
+    } catch {
+      stored = null;
+    }
+
+    if (stored) {
+      applySnapshot(stored);
+      setPct(100);
+      setStatus("Updating…");
+      setReady(true);
+    }
+
     void (async () => {
-      await load();
-      setStatus("Updating today’s feeds…");
-      await refresh();
+      try {
+        if (!stored) setStatus("Loading feeds…");
+        const res = await fetch("/api/articles", { cache: "no-store" });
+        const json = (await res.json()) as Snapshot;
+        if (cancelled) return;
+        if (json.articles?.length) {
+          applySnapshot(json);
+          setPct(100);
+          setStatus("Ready");
+          setReady(true);
+          return;
+        }
+        const snap = await pullFeeds();
+        if (cancelled) return;
+        if (!snap.articles.length) setStatus("Ready — no headlines yet");
+        setPct(100);
+        setReady(true);
+      } catch {
+        setStatus(stored ? "Ready" : "Load failed — opening last cache");
+        if (!stored) await load().catch(() => undefined);
+        if (!cancelled) {
+          setPct(100);
+          setReady(true);
+        }
+      }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [pullFeeds, load, applySnapshot]);
+
+  useEffect(() => {
+    if (ready) return;
+    const tick = window.setInterval(() => {
+      if (realProgressRef.current) return;
+      setPct((p) => (p >= 92 ? p : Math.min(92, p + 4)));
+    }, 180);
+    return () => window.clearInterval(tick);
+  }, [ready]);
 
   const filtered = useMemo(() => {
     const list = data?.articles ?? [];
@@ -184,6 +347,30 @@ export default function NewsApp() {
     }
   }
 
+  if (!ready) {
+    return (
+      <div className="cyber-root">
+        <div className="cyber-bg" />
+        <div className="cyber-scan" />
+        <div className="cyber-beam" />
+        <div className="boot-screen">
+          <div className="hud-panel boot-card">
+            <div className="mx-auto mb-4 flex justify-center">
+              <ShieldMark />
+            </div>
+            <p className="hud-kicker">SOC feed · HK</p>
+            <h1 className="hud-title mt-1">CyberGuard Intelligence</h1>
+            <p className="boot-pct">{Math.min(100, Math.max(0, pct))}%</p>
+            <div className="boot-meter" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+              <span style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} />
+            </div>
+            <p className="boot-status">{status}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="cyber-root">
       <div className="cyber-bg" />
@@ -192,11 +379,13 @@ export default function NewsApp() {
       <div className="hud-shell">
         <header className="hud-header">
           <div className="hud-header-inner">
-            <div className="hud-toolbar mx-auto max-w-[1240px] px-4 py-3 sm:px-5">
+            <div className="hud-toolbar">
               <ShieldMark />
-              <div className="min-w-0">
+              <div className="min-w-0 hud-branding">
                 <p className="hud-kicker">SOC feed · HK</p>
-                <h1 className="hud-title">CyberGuard Intelligence</h1>
+                <h1 className="hud-title">
+                  CyberGuard<span className="title-rest"> Intelligence</span>
+                </h1>
                 <p className="hud-status mt-0.5 flex items-center gap-2">
                   <span className={busy ? "live-dot live-dot-busy" : "live-dot"} />
                   {status}
@@ -205,19 +394,22 @@ export default function NewsApp() {
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search headlines, sources, CVE…"
-                className="hud-input hud-search sm:min-w-[240px] sm:flex-1"
+                placeholder="Search headlines, CVE…"
+                className="hud-input hud-search"
+                enterKeyHint="search"
+                autoCapitalize="off"
+                autoCorrect="off"
               />
               <div className="hud-actions">
                 <button type="button" onClick={() => setExportOpen(true)} disabled={exporting} className="hud-btn hud-btn-primary disabled:opacity-60">
-                  {exporting ? "Exporting…" : "Export Report"}
+                  {exporting ? "Exporting…" : "Export"}
                 </button>
                 <button type="button" onClick={() => void refresh()} disabled={busy} className="hud-btn disabled:opacity-60">
-                  {busy ? `Refreshing ${pct}%` : "Refresh"}
+                  {busy ? `${pct}%` : "Refresh"}
                 </button>
               </div>
             </div>
-            <div className="mx-auto flex max-w-[1240px] items-center gap-2 overflow-x-auto px-4 pb-3 sm:px-5">
+            <div className="hud-chips">
               {CHIPS.map((c) => (
                 <button
                   key={c.id}
@@ -225,10 +417,10 @@ export default function NewsApp() {
                   className={chip === c.id ? "hud-chip hud-chip-on" : "hud-chip"}
                 >
                   {c.label}
-                  <span className="ml-1 opacity-80">{counts[c.id]}</span>
+                  <span className="hud-chip-count">{counts[c.id]}</span>
                 </button>
               ))}
-              <div className="hud-meter-wrap ml-auto flex items-center gap-3">
+              <div className="hud-meter-wrap">
                 <span className="w-10 text-right text-xs font-bold text-[#3ce7ff]">{busy ? `${pct}%` : ""}</span>
                 <div className="hud-meter">
                   <span style={{ width: `${busy ? pct : 0}%` }} />
@@ -238,30 +430,32 @@ export default function NewsApp() {
           </div>
         </header>
 
-        <main className="mx-auto grid max-w-[1240px] gap-6 px-4 py-7 sm:px-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <section className="space-y-4">
+        <main className="hud-main">
+          <section className="feed-col space-y-3 sm:space-y-4">
             {filtered.length === 0 ? (
-              <div className="hud-panel p-10 text-center text-[#8ea0c4]">
+              <div className="hud-panel p-8 text-center text-[#8ea0c4]">
                 {busy ? "Updating today’s feeds…" : "No headlines for this filter yet."}
               </div>
             ) : (
               filtered.slice(0, 40).map((a) => (
                 <article
                   key={a.id}
-                  className={`hud-panel hud-card p-6 pl-7 ${a.read ? "hud-card-read" : ""}`}
+                  className={`hud-panel hud-card feed-card ${a.read ? "hud-card-read" : ""}`}
                   onMouseMove={(event) => tiltCard(event.currentTarget, event.clientX, event.clientY)}
                   onMouseLeave={(event) => resetTilt(event.currentTarget)}
                 >
-                  <div className="mb-3 flex items-center justify-between gap-3 text-[#8ea0c4]">
+                  <div className="mb-2 flex items-center justify-between gap-3 text-[#8ea0c4]">
                     <span className="hud-badge">{a.source}</span>
-                    <span className="text-[0.95rem]">{relative(a.pubDate || a.fetchedAt)}</span>
+                    <span className="shrink-0 text-[0.88rem]">{relative(a.pubDate || a.fetchedAt)}</span>
                   </div>
                   <a href={a.url} target="_blank" rel="noreferrer" className="hud-link">
                     {a.title}
                   </a>
-                  {a.description ? <p className="hud-desc line-clamp-2">{a.description}</p> : null}
-                  <div className="mt-4 flex items-center gap-3 text-[0.95rem]">
-                    <button onClick={() => void toggleRead(a)} className="font-medium text-[#2ee9c7] hover:underline">
+                  {a.description && shouldShowDescription(a.title, a.description, a.source) ? (
+                    <p className="hud-desc line-clamp-2">{a.description}</p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-[0.95rem]">
+                    <button onClick={() => void toggleRead(a)} className="min-h-11 font-medium text-[#2ee9c7] hover:underline">
                       {a.read ? "Mark unread" : "Mark read"}
                     </button>
                     {relevanceScore(a) > 0.15 ? (
@@ -275,11 +469,9 @@ export default function NewsApp() {
             )}
           </section>
 
-          <aside className="space-y-4 lg:sticky lg:top-28 lg:self-start">
+          <aside className="intel-rail">
             <SideCard title="TOP 10 today" items={ranked} empty="Nil" />
-            <SideCard title="HKCERT" items={agencies.hkcert} empty="Nil" />
-            <SideCard title="GovCERT.HK" items={agencies.govcert} empty="Nil" />
-            <SideCard title="Cybersechub" items={agencies.cybersechub} empty="Nil" />
+            <AgencyCard agencies={agencies} />
           </aside>
         </main>
       </div>
@@ -390,7 +582,7 @@ function SideCard({
   empty: string;
 }) {
   return (
-    <div className="hud-panel p-5">
+    <div className="hud-panel intel-card">
       <h2 className="hud-kicker mb-4">{title}</h2>
       {items.length === 0 ? (
         <p className="text-[1.05rem] italic text-[#8ea0c4]">{empty}</p>
@@ -406,6 +598,41 @@ function SideCard({
           ))}
         </ol>
       )}
+    </div>
+  );
+}
+
+function AgencyCard({
+  agencies,
+}: {
+  agencies: { hkcert: AgencyItem[]; govcert: AgencyItem[]; cybersechub: AgencyItem[] };
+}) {
+  const groups = [
+    { title: "HKCERT", items: agencies.hkcert },
+    { title: "GovCERT.HK", items: agencies.govcert },
+    { title: "Cybersechub", items: agencies.cybersechub },
+  ].filter((group) => group.items.length > 0);
+  if (!groups.length) return null;
+  return (
+    <div className="hud-panel intel-card">
+      <h2 className="hud-kicker mb-4">Agencies</h2>
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <section key={group.title}>
+            <h3 className="agency-subhead">{group.title}</h3>
+            <ol className="mt-2 max-h-48 space-y-2 overflow-y-auto pr-1">
+              {group.items.map((it, i) => (
+                <li key={`${it.url}-${i}`} className="flex gap-2">
+                  <span className="hud-rank">{String(i + 1).padStart(2, "0")}</span>
+                  <a href={it.url} target="_blank" rel="noreferrer" className="hud-link hud-side-link">
+                    {it.title}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

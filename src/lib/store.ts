@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
+import { isGoogleNewsUrl } from "./googleNews";
+import { dedupeStories } from "./rank";
 import type { Article, CacheState } from "./types";
 
 function dataDir(): string {
@@ -20,23 +22,32 @@ const EMPTY: CacheState = {
   lastRefresh: null,
 };
 
+let memory: CacheState | null = null;
+
 export async function loadCache(): Promise<CacheState> {
+  if (memory) return memory;
   try {
     const raw = await fs.readFile(cachePath(), "utf8");
     const parsed = JSON.parse(raw) as CacheState;
-    return {
+    memory = {
       articles: parsed.articles ?? [],
       agencies: parsed.agencies ?? EMPTY.agencies,
       lastRefresh: parsed.lastRefresh ?? null,
     };
+    return memory;
   } catch {
     return { ...EMPTY, agencies: { hkcert: [], govcert: [], cybersechub: [] } };
   }
 }
 
 export async function saveCache(state: CacheState): Promise<void> {
-  await fs.mkdir(dataDir(), { recursive: true });
-  await fs.writeFile(cachePath(), JSON.stringify(state, null, 2), "utf8");
+  memory = state;
+  try {
+    await fs.mkdir(dataDir(), { recursive: true });
+    await fs.writeFile(cachePath(), JSON.stringify(state, null, 2), "utf8");
+  } catch {
+    /* serverless fs can be read-only besides /tmp; memory still holds the snapshot */
+  }
 }
 
 export async function mergeArticles(incoming: Article[]): Promise<CacheState> {
@@ -45,11 +56,16 @@ export async function mergeArticles(incoming: Article[]): Promise<CacheState> {
   for (const art of current.articles) byId.set(art.id, art);
   for (const art of incoming) {
     const prev = byId.get(art.id);
-    byId.set(art.id, prev ? { ...art, read: prev.read } : art);
+    if (!prev) {
+      byId.set(art.id, art);
+      continue;
+    }
+    const url = isGoogleNewsUrl(art.url) && !isGoogleNewsUrl(prev.url) ? prev.url : art.url;
+    byId.set(art.id, { ...art, url, read: prev.read });
   }
-  const articles = [...byId.values()]
-    .sort((a, b) => (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt))
-    .slice(0, 500);
+  const articles = dedupeStories(
+    [...byId.values()].sort((a, b) => (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt)),
+  ).slice(0, 500);
   const next = { ...current, articles, lastRefresh: new Date().toISOString() };
   await saveCache(next);
   return next;

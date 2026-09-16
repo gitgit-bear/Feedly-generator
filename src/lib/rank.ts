@@ -1,3 +1,5 @@
+import { isGoogleNewsUrl } from "./googleNews";
+import { GOOGLE_SOURCE_IDS } from "./sources";
 import type { Article } from "./types";
 
 const TERMS = [
@@ -66,14 +68,119 @@ export function isToday(iso: string | null): boolean {
   return hkTodayStamp(d) === hkTodayStamp();
 }
 
+const STOP = new Set([
+  "a",
+  "an",
+  "the",
+  "of",
+  "in",
+  "on",
+  "for",
+  "to",
+  "and",
+  "or",
+  "with",
+  "after",
+  "from",
+  "by",
+  "its",
+  "as",
+  "at",
+  "is",
+  "are",
+  "be",
+  "into",
+  "over",
+  "about",
+  "that",
+  "this",
+]);
+
+function urlKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname.replace(/^www\./i, "").toLowerCase()}${parsed.pathname.replace(/\/+$/, "").toLowerCase()}`;
+  } catch {
+    return url.trim().toLowerCase();
+  }
+}
+
+function stem(word: string): string {
+  if (word.length > 4 && word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
+
+export function titleTokens(title: string): string[] {
+  return title
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
+    .split(/\s+/)
+    .map(stem)
+    .filter((word) => word.length > 2 && !STOP.has(word));
+}
+
+function jaccard(a: string[], b: string[]): number {
+  if (!a.length || !b.length) return 0;
+  const left = new Set(a);
+  const right = new Set(b);
+  let inter = 0;
+  for (const token of left) if (right.has(token)) inter += 1;
+  return inter / (left.size + right.size - inter);
+}
+
+export function sameStory(a: Pick<Article, "title" | "url" | "id">, b: Pick<Article, "title" | "url" | "id">): boolean {
+  if (a.id === b.id || a.url === b.url) return true;
+  if (urlKey(a.url) && urlKey(a.url) === urlKey(b.url)) return true;
+  const ta = titleTokens(a.title);
+  const tb = titleTokens(b.title);
+  if (!ta.length || !tb.length) return false;
+  if (ta.join(" ") === tb.join(" ")) return true;
+  if (ta.slice(0, 5).join(" ") === tb.slice(0, 5).join(" ")) return true;
+  const shared = ta.filter((token) => tb.includes(token) && token.length >= 5).length;
+  const lead = ta[0] === tb[0] && ta[1] === tb[1];
+  if (lead && shared >= 2 && jaccard(ta, tb) >= 0.28) return true;
+  return jaccard(ta, tb) >= 0.62 && shared >= 3;
+}
+
+function preferArticle(a: Article, b: Article): Article {
+  const aGoogle = isGoogleNewsUrl(a.url) ? 1 : 0;
+  const bGoogle = isGoogleNewsUrl(b.url) ? 1 : 0;
+  if (aGoogle !== bGoogle) return aGoogle < bGoogle ? a : b;
+  const aSyndicated = GOOGLE_SOURCE_IDS.has(a.sourceId) ? 1 : 0;
+  const bSyndicated = GOOGLE_SOURCE_IDS.has(b.sourceId) ? 1 : 0;
+  if (aSyndicated !== bSyndicated) return aSyndicated < bSyndicated ? a : b;
+  const rel = relevanceScore(a) - relevanceScore(b);
+  if (Math.abs(rel) > 0.0001) return rel > 0 ? a : b;
+  const aLen = a.description.length;
+  const bLen = b.description.length;
+  if (aLen !== bLen) return aLen > bLen ? a : b;
+  return (a.pubDate || a.fetchedAt) >= (b.pubDate || b.fetchedAt) ? a : b;
+}
+
+export function dedupeStories(articles: Article[]): Article[] {
+  const kept: Article[] = [];
+  for (const article of articles) {
+    const hit = kept.findIndex((item) => sameStory(item, article));
+    if (hit < 0) {
+      kept.push(article);
+      continue;
+    }
+    const winner = preferArticle(article, kept[hit]);
+    const loser = winner === article ? kept[hit] : article;
+    kept[hit] = { ...winner, read: winner.read || loser.read };
+  }
+  return kept.sort((a, b) => (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt));
+}
+
 export function top10(articles: Article[]): Article[] {
-  return articles
-    .filter((a) => !isEventOrWebinar(a) && isToday(a.pubDate || a.fetchedAt))
+  return dedupeStories(
+    articles.filter((a) => !isEventOrWebinar(a) && isToday(a.pubDate || a.fetchedAt)),
+  )
     .sort((a, b) => {
       const rb = relevanceScore(b) - relevanceScore(a);
       if (Math.abs(rb) > 0.0001) return rb;
       return (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt);
     })
-    .filter((a, i, arr) => arr.findIndex((x) => x.id === a.id || x.title === a.title) === i)
     .slice(0, 10);
 }

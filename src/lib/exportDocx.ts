@@ -18,14 +18,12 @@ import {
 } from "docx";
 import type { ReportItem, ReportPayload } from "./reportPayload";
 
-const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
-const NO_BORDERS = {
-  top: NONE,
-  bottom: NONE,
-  left: NONE,
-  right: NONE,
-  insideHorizontal: NONE,
-  insideVertical: NONE,
+const LINE = { style: BorderStyle.SINGLE, size: 4, color: "000000" };
+const CELL_BORDERS = {
+  top: LINE,
+  bottom: LINE,
+  left: LINE,
+  right: LINE,
 };
 const TITLE = "4F4F4F";
 const SOURCE = "12A2C6";
@@ -85,8 +83,9 @@ function articleRuns(item: ReportItem, section: boolean): Array<TextRun | Extern
 
 function numCell(text: string): TableCell {
   return new TableCell({
-    borders: NO_BORDERS,
+    borders: CELL_BORDERS,
     width: { size: NUM_W, type: WidthType.DXA },
+    margins: { top: 0, bottom: 0, left: 108, right: 108 },
     verticalAlign: VerticalAlign.TOP,
     children: [
       new Paragraph({
@@ -99,8 +98,9 @@ function numCell(text: string): TableCell {
 
 function contentCell(children: Array<TextRun | ExternalHyperlink>): TableCell {
   return new TableCell({
-    borders: NO_BORDERS,
+    borders: CELL_BORDERS,
     width: { size: BODY_W, type: WidthType.DXA },
+    margins: { top: 0, bottom: 0, left: 108, right: 108 },
     verticalAlign: VerticalAlign.TOP,
     children: [
       new Paragraph({
@@ -115,9 +115,10 @@ function headingRow(text: string): TableRow {
   return new TableRow({
     children: [
       new TableCell({
-        borders: NO_BORDERS,
+        borders: CELL_BORDERS,
         columnSpan: 2,
         width: { size: TABLE_W, type: WidthType.DXA },
+        margins: { top: 0, bottom: 0, left: 108, right: 108 },
         children: [
           new Paragraph({
             spacing: { before: 0, after: 0, line: 240 },
@@ -181,13 +182,28 @@ export async function buildReportDocx(payload: ReportPayload): Promise<Uint8Arra
         children: [
           new Table({
             width: { size: TABLE_W, type: WidthType.DXA },
-            borders: NO_BORDERS,
+            borders: {
+              top: LINE,
+              bottom: LINE,
+              left: LINE,
+              right: LINE,
+              insideHorizontal: LINE,
+              insideVertical: LINE,
+            },
             columnWidths: [NUM_W, BODY_W],
             rows: topRows,
           }),
+          new Paragraph({ spacing: { after: 200 }, children: [] }),
           new Table({
             width: { size: TABLE_W, type: WidthType.DXA },
-            borders: NO_BORDERS,
+            borders: {
+              top: LINE,
+              bottom: LINE,
+              left: LINE,
+              right: LINE,
+              insideHorizontal: LINE,
+              insideVertical: LINE,
+            },
             columnWidths: [NUM_W, BODY_W],
             rows: sectionRows,
           }),

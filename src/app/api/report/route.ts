@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { loadCacheOrCollect } from "@/lib/collect";
 import { renderReportHtml } from "@/lib/report";
-import { buildReportDocx } from "@/lib/exportDocx";
-import { buildReportPdf } from "@/lib/exportPdf";
-import { buildExactPair } from "@/lib/exportExact";
+import { buildReportFiles } from "@/lib/buildReport";
 import { buildReportPayload } from "@/lib/reportPayload";
+import { unwrapReportPayload } from "@/lib/unwrapGoogleNews";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,38 +27,41 @@ export async function GET(req: Request) {
   const format = new URL(req.url).searchParams.get("format") ?? "html";
   const cache = await loadCacheOrCollect();
 
+  const payload = await unwrapReportPayload(buildReportPayload(cache.articles, cache.agencies));
+
   if (format === "html") {
-    const html = renderReportHtml(cache.articles, cache.agencies);
-    const stamp = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Hong_Kong",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-    return new NextResponse(html, {
+    return new NextResponse(renderReportHtml(payload), {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
-        "Content-Disposition": `attachment; filename="Feedly News Letter ${stamp}.html"`,
+        "Content-Disposition": `attachment; filename="${payload.basename}.html"`,
       },
     });
   }
 
-  const payload = buildReportPayload(cache.articles, cache.agencies);
-  const exact = format === "pdf" || format === "docx" || format === "doc" ? await buildExactPair(payload) : null;
-
-  if (format === "pdf") {
-    const bytes = exact?.pdf ?? (await buildReportPdf(payload));
-    return fileResponse(bytes, "application/pdf", `${payload.basename}.pdf`);
-  }
-  if (format === "docx" || format === "doc") {
-    if (exact?.doc) {
-      return fileResponse(exact.doc, "application/msword", `${payload.basename}.doc`);
-    }
-    return fileResponse(
-      await buildReportDocx(payload),
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      `${payload.basename}.docx`,
+  if (format === "both" || format === "pair") {
+    const files = await buildReportFiles(payload);
+    return NextResponse.json(
+      {
+        word: Buffer.from(files.word).toString("base64"),
+        wordMime: files.wordMime,
+        wordFilename: files.wordFilename,
+        pdf: Buffer.from(files.pdf).toString("base64"),
+        pdfFilename: `${payload.basename}.pdf`,
+      },
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+        },
+      },
     );
+  }
+
+  if (format === "pdf" || format === "docx" || format === "doc") {
+    const files = await buildReportFiles(payload);
+    if (format === "pdf") {
+      return fileResponse(files.pdf, "application/pdf", `${payload.basename}.pdf`);
+    }
+    return fileResponse(files.word, files.wordMime, files.wordFilename);
   }
 
   return NextResponse.json({ error: "Unsupported format" }, { status: 400 });

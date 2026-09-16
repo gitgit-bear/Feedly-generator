@@ -2,10 +2,13 @@ node_modules
 .next
 out
 data
+tools
 *.log
 .DS_Store
 .env*
 tsconfig.tsbuildinfo
 .vercel
+__pycache__/
+*.pyc
 
 

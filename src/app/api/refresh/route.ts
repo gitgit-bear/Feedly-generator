@@ -1,8 +1,5 @@
-import { fetchSource } from "@/lib/feeds";
-import { fetchAgencies } from "@/lib/agencies";
-import { SOURCES } from "@/lib/sources";
-import { loadCache, mergeArticles, saveCache } from "@/lib/store";
-import type { Article } from "@/lib/types";
+import { NextResponse } from "next/server";
+import { COLLECT_TOTAL, asSnapshot, collectNews } from "@/lib/collect";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,54 +9,39 @@ function sse(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-export async function POST() {
+export async function POST(req: Request) {
+  const wantJson = req.headers.get("accept")?.includes("application/json");
+  if (wantJson) {
+    const cache = await collectNews();
+    return NextResponse.json({ snapshot: asSnapshot(cache) });
+  }
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
       const send = (payload: unknown) => controller.enqueue(encoder.encode(sse(payload)));
-      const incoming: Article[] = [];
-      const total = SOURCES.length + 1;
-      let done = 0;
-
-      send({ type: "start", total });
-
-      const results = await Promise.all(
-        SOURCES.map(async (source) => {
-          const result = await fetchSource(source);
-          incoming.push(...result.articles);
-          done += 1;
-          send({
-            type: "progress",
-            done,
-            total,
-            source: source.name,
-            ok: !result.error,
-            error: result.error ?? null,
-            count: result.articles.length,
-          });
-          return result;
-        }),
-      );
-
-      send({ type: "progress", done, total, source: "HKCERT / GovCERT / Cybersechub" });
-      const agencies = await fetchAgencies();
-      done += 1;
-      send({ type: "progress", done, total, source: "Agencies", ok: true });
-
-      const cache = await mergeArticles(incoming);
-      cache.agencies = agencies;
-      cache.lastRefresh = new Date().toISOString();
-      await saveCache(cache);
-
-      const failed = results.filter((r) => r.error).length;
-      const latest = await loadCache();
-      send({
-        type: "done",
-        articles: latest.articles.length,
-        failed,
-        lastRefresh: latest.lastRefresh,
-      });
-      controller.close();
+      try {
+        send({ type: "start", total: COLLECT_TOTAL });
+        let failed = 0;
+        const cache = await collectNews((progress) => {
+          if (progress.ok === false) failed += 1;
+          send({ type: "progress", ...progress });
+        });
+        send({
+          type: "done",
+          articles: cache.articles.length,
+          failed,
+          lastRefresh: cache.lastRefresh,
+          snapshot: asSnapshot(cache),
+        });
+      } catch (err) {
+        send({
+          type: "error",
+          message: err instanceof Error ? err.message : "Refresh failed",
+        });
+      } finally {
+        controller.close();
+      }
     },
   });
 
@@ -68,6 +50,7 @@ export async function POST() {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }

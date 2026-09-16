@@ -3,6 +3,8 @@ import { createHash } from "crypto";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { repairPdfLinkUris, reportUrls } from "./pdfLinks";
+import { fetchRemoteWordPair } from "./remoteWord";
 import type { ReportPayload } from "./reportPayload";
 
 export type ExactPair = {
@@ -73,7 +75,7 @@ function payloadJson(payload: ReportPayload) {
 }
 
 function cacheKey(payload: ReportPayload): string {
-  return createHash("sha1").update(JSON.stringify(payloadJson(payload))).digest("hex");
+  return createHash("sha1").update(`exe-format-v4:${JSON.stringify(payloadJson(payload))}`).digest("hex");
 }
 
 async function fillWithWord(payload: ReportPayload): Promise<ExactPair> {
@@ -92,8 +94,13 @@ async function fillWithWord(payload: ReportPayload): Promise<ExactPair> {
       throw new Error(result.stderr.trim() || result.stdout.trim() || `Word export failed (${result.code})`);
     }
     const pdfPath = outDoc.replace(/\.doc$/i, ".pdf");
-    const [doc, pdf] = await Promise.all([fs.readFile(outDoc), fs.readFile(pdfPath)]);
-    return { doc: new Uint8Array(doc), pdf: new Uint8Array(pdf) };
+    const [doc, pdfRaw] = await Promise.all([fs.readFile(outDoc), fs.readFile(pdfPath)]);
+    const urls = [
+      ...reportUrls(payload.topItems),
+      ...payload.sections.flatMap((section) => reportUrls(section.items)),
+    ];
+    const pdf = await repairPdfLinkUris(new Uint8Array(pdfRaw), urls);
+    return { doc: new Uint8Array(doc), pdf };
   } finally {
     await new Promise((r) => setTimeout(r, 250));
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
@@ -101,7 +108,9 @@ async function fillWithWord(payload: ReportPayload): Promise<ExactPair> {
 }
 
 export async function buildExactPair(payload: ReportPayload): Promise<ExactPair | null> {
-  if (process.env.VERCEL || process.platform !== "win32") return null;
+  if (process.env.VERCEL || process.platform !== "win32") {
+    return fetchRemoteWordPair(payload);
+  }
   try {
     await fs.access(templatePath());
     await fs.access(scriptPath());
@@ -119,7 +128,7 @@ export async function buildExactPair(payload: ReportPayload): Promise<ExactPair 
       cache = { ...pair, key, at: Date.now() };
       return pair;
     } catch (err) {
-      console.error("[report] Word template fill failed, using layout fallback", err);
+      console.error("[report] Word template fill failed, converting filled sample instead", err);
       return null;
     } finally {
       inflight = null;

@@ -47,6 +47,10 @@ export const SOURCES: FeedSource[] = [
   { id: "troyhunt", name: "Troy Hunt", url: "https://www.troyhunt.com/rss/" },
 ];
 
+export const GOOGLE_SOURCE_IDS = new Set(
+  SOURCES.filter((source) => source.url.includes("news.google.com")).map((source) => source.id),
+);
+
 export const FALLBACKS: Record<string, string[]> = {
   cisa: [
     "https://www.cisa.gov/cybersecurity-advisories/all.xml",

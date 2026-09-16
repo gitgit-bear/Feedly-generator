@@ -10,8 +10,9 @@ export type SaveResult =
 export const WORD_MIME = "application/msword";
 export const PDF_MIME = "application/pdf";
 
-export function reportDownloadUrl(format: "pdf" | "docx"): string {
-  return `/api/report?format=${format === "docx" ? "doc" : "pdf"}&dl=1`;
+export function reportDownloadUrl(format: "pdf" | "docx" | "both"): string {
+  const value = format === "docx" ? "doc" : format === "both" ? "both" : "pdf";
+  return `/api/report?format=${value}&dl=1`;
 }
 
 export function isMobileBrowser(): boolean {
@@ -53,7 +54,16 @@ function filenameFrom(res: Response, fallback: string): string {
   return match?.[1] || fallback;
 }
 
-export async function fetchReport(format: "docx" | "pdf"): Promise<{ bytes: Uint8Array; name: string; mime: string }> {
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+type ReportFile = { bytes: Uint8Array; name: string; mime: string };
+
+export async function fetchReport(format: "docx" | "pdf"): Promise<ReportFile> {
   const res = await fetch(reportDownloadUrl(format), { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`Could not build ${format.toUpperCase()} (${res.status})`);
@@ -62,6 +72,36 @@ export async function fetchReport(format: "docx" | "pdf"): Promise<{ bytes: Uint
   const mime = res.headers.get("Content-Type")?.split(";")[0].trim() || fallbackMime;
   const fallback = format === "pdf" ? "Feedly News Letter.pdf" : "Feedly News Letter.doc";
   return { bytes: new Uint8Array(await res.arrayBuffer()), name: filenameFrom(res, fallback), mime };
+}
+
+export async function fetchReportPair(): Promise<{ pdf: ReportFile; docx: ReportFile }> {
+  const res = await fetch(reportDownloadUrl("both"), { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`Could not build report (${res.status})`);
+  }
+  const data = (await res.json()) as {
+    word?: string;
+    pdf?: string;
+    wordMime?: string;
+    wordFilename?: string;
+    pdfFilename?: string;
+    error?: string;
+  };
+  if (!data.word || !data.pdf) {
+    throw new Error(data.error || "Could not build Word + PDF");
+  }
+  return {
+    pdf: {
+      bytes: fromBase64(data.pdf),
+      name: data.pdfFilename || "Feedly News Letter.pdf",
+      mime: PDF_MIME,
+    },
+    docx: {
+      bytes: fromBase64(data.word),
+      name: data.wordFilename || "Feedly News Letter.doc",
+      mime: data.wordMime || WORD_MIME,
+    },
+  };
 }
 
 function openServerDownload(format: "pdf" | "docx") {
@@ -186,7 +226,7 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
         openServerDownload(kind);
         return { status: "saved", files: names };
       }
-      const [pdf, docx] = await Promise.all([fetchReport("pdf"), fetchReport("docx")]);
+      const { pdf, docx } = await fetchReportPair();
       const shared = await shareFiles([
         toFile(pdf.bytes, pdf.name, pdf.mime),
         toFile(docx.bytes, docx.name, docx.mime),
@@ -220,7 +260,11 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
   try {
     if (kind === "docx") docx = await fetchReport("docx");
     else if (kind === "pdf") pdf = await fetchReport("pdf");
-    else [docx, pdf] = await Promise.all([fetchReport("docx"), fetchReport("pdf")]);
+    else {
+      const pair = await fetchReportPair();
+      docx = pair.docx;
+      pdf = pair.pdf;
+    }
   } catch (err) {
     return { status: "error", message: err instanceof Error ? err.message : "Export failed" };
   }

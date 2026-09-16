@@ -4,11 +4,11 @@ import { isToday } from "./rank";
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 CyberGuardWeb/1.0";
 
-async function getText(url: string, timeoutMs = 12000): Promise<string> {
+async function getText(url: string, timeoutMs = 5000): Promise<string> {
   const res = await fetch(url, {
     headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
     signal: AbortSignal.timeout(timeoutMs),
-    cache: "no-store",
+    next: { revalidate: 120 },
   });
   if (!res.ok) return "";
   return res.text();
@@ -92,7 +92,7 @@ export async function fetchCybersechub(): Promise<AgencyItem[]> {
   const out: AgencyItem[] = [];
   const seen = new Set<string>();
   let offset = 0;
-  for (let page = 0; page < 4 && out.length < 20; page += 1) {
+  for (let page = 0; page < 1 && out.length < 20; page += 1) {
     const res = await fetch("https://www.cybersechub.hk/backend_api/getCVEAlerts", {
       method: "POST",
       headers: {
@@ -111,8 +111,8 @@ export async function fetchCybersechub(): Promise<AgencyItem[]> {
         toDate: "",
         timeOffset: -480,
       }),
-      signal: AbortSignal.timeout(15000),
-      cache: "no-store",
+      signal: AbortSignal.timeout(5000),
+      next: { revalidate: 120 },
     });
     if (!res.ok) break;
     const data = (await res.json()) as { combineList?: unknown[] };

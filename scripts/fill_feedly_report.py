@@ -72,6 +72,66 @@ def _word_cell_content_range(cell: Any) -> Any:
     return rng
 
 
+def _word_fix_hyperlink_addresses(doc: Any, urls: List[str]) -> None:
+    known = sorted((u.strip() for u in urls if isinstance(u, str) and u.startswith("http")), key=len, reverse=True)
+    if not known:
+        return
+    try:
+        count = int(doc.Hyperlinks.Count)
+    except Exception:
+        return
+    for i in range(1, count + 1):
+        try:
+            hl = doc.Hyperlinks(i)
+            addr = (hl.Address or "").strip()
+        except Exception:
+            continue
+        if not addr:
+            continue
+        stripped = addr.rstrip("/")
+        for url in known:
+            if url == addr:
+                break
+            if url.startswith(stripped) and len(url) > len(stripped):
+                try:
+                    hl.Address = url
+                except Exception:
+                    pass
+                break
+
+
+def _word_disable_auto_links(word: Any) -> None:
+    try:
+        word.Options.AutoFormatAsYouTypeReplaceHyperlinks = False
+        word.Options.AutoFormatReplaceHyperlinks = False
+    except Exception:
+        pass
+    try:
+        word.Options.AutoFormatAsYouTypeReplaceInternetAndNetworkPaths = False
+    except Exception:
+        pass
+
+
+def _word_delete_hyperlinks_in_range(doc: Any, start: int, end: int) -> None:
+    try:
+        count = int(doc.Hyperlinks.Count)
+    except Exception:
+        return
+    for i in range(count, 0, -1):
+        try:
+            hl = doc.Hyperlinks(i)
+            hl_start = int(hl.Range.Start)
+            hl_end = int(hl.Range.End)
+        except Exception:
+            continue
+        if hl_end <= start or hl_start >= end:
+            continue
+        try:
+            hl.Delete()
+        except Exception:
+            pass
+
+
 def _word_apply_cell_run_style(doc: Any, start: int, length: int, cell_end: int, color: int, href: Optional[str] = None) -> None:
     if length <= 0:
         return
@@ -83,7 +143,18 @@ def _word_apply_cell_run_style(doc: Any, start: int, length: int, cell_end: int,
     if not href:
         return
     try:
-        doc.Hyperlinks.Add(Anchor=rng, Address=href)
+        rng.NoProofing = True
+    except Exception:
+        pass
+    _word_delete_hyperlinks_in_range(doc, start, end)
+    try:
+        hl = doc.Hyperlinks.Add(Anchor=rng, Address=href)
+        try:
+            hl.Address = href
+        except Exception:
+            pass
+        rng.Font.Color = color
+        rng.Font.Underline = 1
     except Exception:
         rng.Font.Underline = 1
 
@@ -178,23 +249,47 @@ def _word_clear_table_borders(table: Any) -> None:
         pass
 
 
+def _word_section_slot_rows(table: Any, heading_row: int) -> List[int]:
+    slots: List[int] = []
+    for row in range(heading_row + 1, int(table.Rows.Count) + 1):
+        try:
+            left = _word_plain_cell_text(table.Cell(row, 1))
+        except Exception:
+            break
+        if "intelligence from" in left.lower():
+            break
+        right = ""
+        try:
+            right = _word_plain_cell_text(table.Cell(row, 2))
+        except Exception:
+            pass
+        if not left and not right:
+            break
+        slots.append(row)
+    return slots
+
+
 def _word_fill_section_numbered_rows(table: Any, heading_row: int, items: List[ReportArticle]) -> None:
     real = [item for item in items if not _is_nil(item)]
-    content_row = heading_row + 1
-    if content_row > int(table.Rows.Count):
+    slots = _word_section_slot_rows(table, heading_row)
+    if not slots:
         return
-    proto = table.Cell(content_row, 1)
-    rows_before = int(table.Rows.Count)
-    if not real:
-        _word_write_article_in_one_cell(table.Cell(content_row, 2), None, section=True)
+    want: List[Optional[ReportArticle]] = real if real else [None]
+    proto = table.Cell(slots[0], 1)
+    used = min(len(want), len(slots))
+    for i in range(used):
+        rows_before = int(table.Rows.Count)
+        _word_write_number_in_cell(table.Cell(slots[i], 1), f"{i + 1}.", proto)
+        _word_write_article_in_one_cell(table.Cell(slots[i], 2), want[i], section=True)
         if int(table.Rows.Count) != rows_before:
             raise RuntimeError("Word split a section table; refusing to save broken layout")
-        return
-    _word_write_article_in_one_cell(table.Cell(content_row, 2), real[0], section=True)
-    if int(table.Rows.Count) != rows_before:
-        raise RuntimeError("Word split a section table; refusing to save broken layout")
-    last_row = content_row
-    for n, item in enumerate(real[1:], start=2):
+    for row in reversed(slots[used:]):
+        rows_before = int(table.Rows.Count)
+        table.Rows(row).Delete()
+        if int(table.Rows.Count) != rows_before - 1:
+            raise RuntimeError("Word split a section table; refusing to save broken layout")
+    last_row = heading_row + used
+    for n, item in enumerate(want[used:], start=used + 1):
         rows_before = int(table.Rows.Count)
         last_row = _word_insert_row_after(table, last_row)
         if int(table.Rows.Count) != rows_before + 1:
@@ -305,9 +400,14 @@ def fill_template(template_path: str, out_path: str, payload: Dict[str, Any]) ->
         word.DisplayAlerts = 0
     except Exception:
         pass
+    _word_disable_auto_links(word)
     document = None
     try:
         document = word.Documents.Open(dst, False, False, False)
+        try:
+            document.AutoHyphenation = False
+        except Exception:
+            pass
         _word_refresh_header(document, stamp)
 
         if int(document.Tables.Count) >= 1:
@@ -337,6 +437,12 @@ def fill_template(template_path: str, out_path: str, payload: Dict[str, Any]) ->
             document.BuiltInDocumentProperties("Title").Value = os.path.splitext(os.path.basename(dst))[0]
         except Exception:
             pass
+        urls = [
+            item.url
+            for item in items + _as_list(payload.get("hkItems")) + _as_list(payload.get("govItems")) + _as_list(payload.get("cyberItems"))
+            if item and item.url
+        ]
+        _word_fix_hyperlink_addresses(document, urls)
         document.Save()
         pdf_path = os.path.splitext(dst)[0] + ".pdf"
         _word_export_document_pdf(document, pdf_path)

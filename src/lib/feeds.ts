@@ -1,9 +1,18 @@
 import Parser from "rss-parser";
 import { FALLBACKS } from "./sources";
+import { isGoogleNewsLabel, readRssPublisher, stripPublisherSuffix, unwrapGoogleNewsUrlLocal } from "./googleNews";
 import type { Article, FeedSource } from "./types";
 
-const parser = new Parser({
-  timeout: 8000,
+const FETCH_MS = 3500;
+const SOURCE_MS = 4000;
+
+type RssItem = Parser.Item & { rssSource?: unknown };
+
+const parser = new Parser<Record<string, unknown>, RssItem>({
+  timeout: FETCH_MS,
+  customFields: {
+    item: [["source", "rssSource"]],
+  },
   headers: {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 CyberGuardWeb/1.0",
@@ -32,7 +41,7 @@ function articleId(url: string, title: string, source: string): string {
   return Buffer.from(norm).toString("base64url").slice(0, 80);
 }
 
-async function parseFeed(url: string): Promise<Parser.Output<Parser.Item>> {
+async function parseFeed(url: string, timeoutMs: number): Promise<Parser.Output<RssItem>> {
   const res = await fetch(url, {
     headers: {
       "User-Agent":
@@ -40,8 +49,8 @@ async function parseFeed(url: string): Promise<Parser.Output<Parser.Item>> {
       Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
       "Accept-Encoding": "gzip, deflate",
     },
-    signal: AbortSignal.timeout(8000),
-    cache: "no-store",
+    signal: AbortSignal.timeout(timeoutMs),
+    next: { revalidate: 120 },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const xml = await res.text();
@@ -52,22 +61,30 @@ export async function fetchSource(
   source: FeedSource,
 ): Promise<{ articles: Article[]; error?: string }> {
   const urls = [source.url, ...(FALLBACKS[source.id] ?? [])];
+  const deadline = Date.now() + SOURCE_MS;
   let lastErr = "Fetch failed";
   for (const url of urls) {
+    const remain = deadline - Date.now();
+    if (remain < 400) break;
     try {
-      const parsed = await parseFeed(url);
+      const parsed = await parseFeed(url, Math.min(FETCH_MS, remain));
       const now = new Date().toISOString();
       const articles: Article[] = (parsed.items ?? []).slice(0, 8).flatMap((item) => {
-        const link = (item.link || item.guid || "").trim();
-        if (!link) return [];
-        const title = (item.title || "Untitled").replace(/<[^>]+>/g, "").trim();
+        const rawLink = (item.link || item.guid || "").trim();
+        if (!rawLink) return [];
+        const link = unwrapGoogleNewsUrlLocal(rawLink) || rawLink;
+        let title = (item.title || "Untitled").replace(/<[^>]+>/g, "").trim();
+        const publisher = readRssPublisher(item.rssSource, item.content || item.contentSnippet || "");
+        const sourceName =
+          source.id === "gnews" && publisher && !isGoogleNewsLabel(publisher) ? publisher : source.name;
+        title = stripPublisherSuffix(title, publisher || (source.id === "gnews" ? sourceName : ""));
         return [
           {
-            id: articleId(link, title, source.name),
+            id: articleId(rawLink, title, sourceName),
             title,
             description: (item.contentSnippet || item.content || "").replace(/<[^>]+>/g, "").slice(0, 400),
             url: link,
-            source: source.name,
+            source: sourceName,
             sourceId: source.id,
             pubDate: item.isoDate || (item.pubDate ? new Date(item.pubDate).toISOString() : null),
             fetchedAt: now,
