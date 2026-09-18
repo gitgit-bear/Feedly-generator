@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgencyItem, Article, CacheState } from "@/lib/types";
 import { isToday, relevanceScore, top10, dedupeStories } from "@/lib/rank";
-import { exportReportFormat, isMobileBrowser, reportDownloadUrl, type ExportKind } from "@/lib/saveReport";
+import { exportReportFormat, exportWeeklyBriefPdf, isMobileBrowser, reportDownloadUrl, type ExportKind } from "@/lib/saveReport";
 import { newsletterFileStamp } from "@/lib/reportPayload";
 import { polishGoogleNewsArticle } from "@/lib/googleNews";
+import { buildWeeklyBrief } from "@/lib/weeklyBrief";
+import WeeklyBriefSheet from "@/components/WeeklyBriefSheet";
 
-type Chip = "today" | "all" | "unread" | "breaches" | "vulns";
+type Chip = "today" | "all" | "unread" | "breaches" | "vulns" | "malware" | "phishing" | "apt" | "patch";
 
 type Snapshot = CacheState & {
   todayCount?: number;
@@ -20,7 +22,13 @@ const CHIPS: { id: Chip; label: string }[] = [
   { id: "unread", label: "Unread" },
   { id: "breaches", label: "Breaches" },
   { id: "vulns", label: "Vulns" },
+  { id: "malware", label: "Malware" },
+  { id: "phishing", label: "Phishing" },
+  { id: "apt", label: "APT" },
+  { id: "patch", label: "Patch" },
 ];
+
+const TOPIC_CHIPS = ["breaches", "vulns", "malware", "phishing", "apt", "patch"] as const;
 
 function matchesChip(a: Article, chip: Chip): boolean {
   if (chip === "all") return true;
@@ -28,7 +36,14 @@ function matchesChip(a: Article, chip: Chip): boolean {
   if (chip === "unread") return !a.read;
   const blob = `${a.title} ${a.description}`.toLowerCase();
   if (chip === "breaches") return /breach|ransomware|data leak/.test(blob);
-  return /cve-|vulnerab|zero-day|exploit|patch/.test(blob);
+  if (chip === "vulns") {
+    return /cve-|vulnerab|zero-day|zero day|0-day|exploit|rce|remote code execution|authentication bypass/.test(blob);
+  }
+  if (chip === "malware") return /malware|infostealer|info-stealer|trojan|botnet|backdoor|\brat\b|stealer/.test(blob);
+  if (chip === "phishing") return /phish|smish|bec\b|business email compromise|spear-?phish/.test(blob);
+  if (chip === "apt") return /\bapt\b|nation-state|state-sponsored|espionage/.test(blob);
+  if (chip === "patch") return /emergency patch|out-of-band|patch tuesday|known exploited|cisa kev/.test(blob);
+  return false;
 }
 
 function tiltCard(el: HTMLElement, clientX: number, clientY: number) {
@@ -135,6 +150,7 @@ export default function NewsApp() {
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [briefOpen, setBriefOpen] = useState(false);
   const [pct, setPct] = useState(0);
   const [status, setStatus] = useState("Connecting to feeds…");
   const busyRef = useRef(false);
@@ -211,7 +227,7 @@ export default function NewsApp() {
   }, [applySnapshot]);
 
   const refresh = useCallback(async () => {
-    if (!ready || busyRef.current) return;
+    if (!ready || busyRef.current || exporting) return;
     busyRef.current = true;
     setBusy(true);
     setPct(0);
@@ -227,7 +243,7 @@ export default function NewsApp() {
       setBusy(false);
       setTimeout(() => setPct(0), 800);
     }
-  }, [pullFeeds, ready]);
+  }, [pullFeeds, ready, exporting]);
 
   useEffect(() => {
     let cancelled = false;
@@ -288,6 +304,14 @@ export default function NewsApp() {
     return () => window.clearInterval(tick);
   }, [ready]);
 
+  useEffect(() => {
+    if (!exporting) return;
+    const tick = window.setInterval(() => {
+      setPct((p) => (p >= 86 ? p : Math.min(86, p + 2)));
+    }, 240);
+    return () => window.clearInterval(tick);
+  }, [exporting]);
+
   const filtered = useMemo(() => {
     const list = data?.articles ?? [];
     const query = q.trim().toLowerCase();
@@ -300,12 +324,23 @@ export default function NewsApp() {
 
   const counts = useMemo(() => {
     const list = data?.articles ?? [];
-    const map: Record<Chip, number> = { today: 0, all: list.length, unread: 0, breaches: 0, vulns: 0 };
+    const map: Record<Chip, number> = {
+      today: 0,
+      all: list.length,
+      unread: 0,
+      breaches: 0,
+      vulns: 0,
+      malware: 0,
+      phishing: 0,
+      apt: 0,
+      patch: 0,
+    };
     for (const a of list) {
       if (isToday(a.pubDate || a.fetchedAt)) map.today += 1;
       if (!a.read) map.unread += 1;
-      if (matchesChip(a, "breaches")) map.breaches += 1;
-      if (matchesChip(a, "vulns")) map.vulns += 1;
+      for (const id of TOPIC_CHIPS) {
+        if (matchesChip(a, id)) map[id] += 1;
+      }
     }
     return map;
   }, [data]);
@@ -322,13 +357,18 @@ export default function NewsApp() {
   const agencies = data?.agencies ?? { hkcert: [], govcert: [], cybersechub: [] };
   const ranked = top10(data?.articles ?? []);
   const fileStamp = newsletterFileStamp();
+  const weekly = useMemo(() => buildWeeklyBrief(data?.articles ?? []), [data]);
 
   async function exportReport(kind: ExportKind) {
-    if (exporting) return;
+    if (exporting || busy) return;
     setExporting(true);
+    setPct(6);
     setStatus(kind === "both" ? "Exporting Word + PDF…" : `Exporting ${kind === "pdf" ? "PDF" : "Word"}…`);
     try {
-      const result = await exportReportFormat(kind);
+      const result = await exportReportFormat(kind, (next, label) => {
+        setPct((p) => Math.max(p, next));
+        if (label) setStatus(label);
+      });
       if (result.status === "cancelled") {
         setStatus("Export cancelled");
         return;
@@ -337,6 +377,7 @@ export default function NewsApp() {
         setStatus(result.message);
         return;
       }
+      setPct(100);
       setExportOpen(false);
       const where = result.folder ? ` in ${result.folder}` : "";
       setStatus(`Saved ${result.files.join(" + ")}${where}`);
@@ -344,8 +385,39 @@ export default function NewsApp() {
       setStatus(err instanceof Error ? `Export failed: ${err.message}` : "Export failed");
     } finally {
       setExporting(false);
+      setTimeout(() => setPct(0), 800);
     }
   }
+
+  async function exportWeekly() {
+    if (exporting || busy) return;
+    setExporting(true);
+    setPct(6);
+    setStatus("Exporting weekly brief…");
+    try {
+      const result = await exportWeeklyBriefPdf(weekly, (next, label) => {
+        setPct((p) => Math.max(p, next));
+        if (label) setStatus(label);
+      });
+      if (result.status === "cancelled") {
+        setStatus("Export cancelled");
+        return;
+      }
+      if (result.status === "error") {
+        setStatus(result.message);
+        return;
+      }
+      setPct(100);
+      setStatus(`Saved ${result.files.join(" + ")}`);
+    } catch (err) {
+      setStatus(err instanceof Error ? `Export failed: ${err.message}` : "Export failed");
+    } finally {
+      setExporting(false);
+      setTimeout(() => setPct(0), 800);
+    }
+  }
+
+  const working = busy || exporting;
 
   if (!ready) {
     return (
@@ -387,7 +459,7 @@ export default function NewsApp() {
                   CyberGuard<span className="title-rest"> Intelligence</span>
                 </h1>
                 <p className="hud-status mt-0.5 flex items-center gap-2">
-                  <span className={busy ? "live-dot live-dot-busy" : "live-dot"} />
+                  <span className={working ? "live-dot live-dot-busy" : "live-dot"} />
                   {status}
                 </p>
               </div>
@@ -401,10 +473,13 @@ export default function NewsApp() {
                 autoCorrect="off"
               />
               <div className="hud-actions">
-                <button type="button" onClick={() => setExportOpen(true)} disabled={exporting} className="hud-btn hud-btn-primary disabled:opacity-60">
-                  {exporting ? "Exporting…" : "Export"}
+                <button type="button" onClick={() => setBriefOpen(true)} disabled={working} className="hud-btn disabled:opacity-60">
+                  Weekly
                 </button>
-                <button type="button" onClick={() => void refresh()} disabled={busy} className="hud-btn disabled:opacity-60">
+                <button type="button" onClick={() => setExportOpen(true)} disabled={working} className="hud-btn hud-btn-primary disabled:opacity-60">
+                  {exporting ? `${pct}%` : "Export"}
+                </button>
+                <button type="button" onClick={() => void refresh()} disabled={working} className="hud-btn disabled:opacity-60">
                   {busy ? `${pct}%` : "Refresh"}
                 </button>
               </div>
@@ -421,9 +496,9 @@ export default function NewsApp() {
                 </button>
               ))}
               <div className="hud-meter-wrap">
-                <span className="w-10 text-right text-xs font-bold text-[#3ce7ff]">{busy ? `${pct}%` : ""}</span>
+                <span className="w-10 text-right text-xs font-bold text-[#3ce7ff]">{working ? `${pct}%` : ""}</span>
                 <div className="hud-meter">
-                  <span style={{ width: `${busy ? pct : 0}%` }} />
+                  <span style={{ width: `${working ? pct : 0}%` }} />
                 </div>
               </div>
             </div>
@@ -470,12 +545,27 @@ export default function NewsApp() {
           </section>
 
           <aside className="intel-rail">
+            <button type="button" className="hud-panel intel-card weekly-teaser" onClick={() => setBriefOpen(true)}>
+              <h2 className="hud-kicker mb-2">Weekly brief</h2>
+              <p className={`weekly-teaser-level weekly-teaser-${weekly.overall}`}>{weekly.overall.toUpperCase()}</p>
+              <p className="weekly-teaser-title">{weekly.topics[0]?.title || "No stories yet"}</p>
+              <p className="text-[0.9rem] text-[#8ea0c4]">{weekly.weekLabel}</p>
+            </button>
             <SideCard title="TOP 10 today" items={ranked} empty="Nil" />
             <AgencyCard agencies={agencies} />
           </aside>
         </main>
       </div>
 
+      {briefOpen ? (
+        <WeeklyBriefSheet
+          brief={weekly}
+          saving={exporting}
+          pct={pct}
+          onClose={() => setBriefOpen(false)}
+          onExport={() => void exportWeekly()}
+        />
+      ) : null}
       {exportOpen ? (
         <div className="export-layer">
           <button
@@ -490,6 +580,14 @@ export default function NewsApp() {
             <p className="mt-2 text-[1.02rem] leading-relaxed text-[#8ea0c4]">
               手機：撳 Save PDF / Save Word。iPhone 開到檔後撳分享 → 儲存到檔案。Android 會入下載資料夾。
             </p>
+            {exporting ? (
+              <div className="export-progress">
+                <p className="export-progress-pct">{pct}%</p>
+                <div className="hud-meter export-meter" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+                  <span style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} />
+                </div>
+              </div>
+            ) : null}
             <div className="mt-4 grid gap-3">
               <a
                 href={reportDownloadUrl("pdf")}
@@ -505,9 +603,9 @@ export default function NewsApp() {
                   event.preventDefault();
                   void exportReport("pdf");
                 }}
-                className="hud-btn hud-btn-primary flex min-h-12 items-center justify-center"
+                className={`hud-btn hud-btn-primary flex min-h-12 items-center justify-center ${exporting ? "pointer-events-none opacity-60" : ""}`}
               >
-                Save PDF
+                {exporting ? `${pct}%` : "Save PDF"}
               </a>
               <a
                 href={reportDownloadUrl("docx")}
@@ -523,9 +621,9 @@ export default function NewsApp() {
                   event.preventDefault();
                   void exportReport("docx");
                 }}
-                className="hud-btn flex min-h-12 items-center justify-center font-bold"
+                className={`hud-btn flex min-h-12 items-center justify-center font-bold ${exporting ? "pointer-events-none opacity-60" : ""}`}
               >
-                Save Word (.doc)
+                {exporting ? `${pct}%` : "Save Word (.doc)"}
               </a>
               <button
                 type="button"
@@ -533,7 +631,7 @@ export default function NewsApp() {
                 onClick={() => void exportReport("both")}
                 className="hud-btn save-both-desktop min-h-12 disabled:opacity-60"
               >
-                {exporting ? "Exporting…" : "Save both"}
+                {exporting ? `${pct}%` : "Save both"}
               </button>
             </div>
             <p className="mt-4 text-[0.95rem] text-[#8ea0c4]">

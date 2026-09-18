@@ -90,6 +90,7 @@ function numCell(text: string): TableCell {
     children: [
       new Paragraph({
         spacing: { before: 0, after: 0, line: 240 },
+        keepLines: true,
         children: [new TextRun({ text, font: "Microsoft YaHei", size: 26 })],
       }),
     ],
@@ -105,6 +106,7 @@ function contentCell(children: Array<TextRun | ExternalHyperlink>): TableCell {
     children: [
       new Paragraph({
         spacing: { before: 0, after: 0, line: 240 },
+        keepLines: true,
         children,
       }),
     ],
@@ -113,6 +115,7 @@ function contentCell(children: Array<TextRun | ExternalHyperlink>): TableCell {
 
 function headingRow(text: string): TableRow {
   return new TableRow({
+    cantSplit: true,
     children: [
       new TableCell({
         borders: CELL_BORDERS,
@@ -122,6 +125,8 @@ function headingRow(text: string): TableRow {
         children: [
           new Paragraph({
             spacing: { before: 0, after: 0, line: 240 },
+            keepLines: true,
+            keepNext: true,
             children: [new TextRun({ text, font: "Microsoft YaHei", size: 26 })],
           }),
         ],
@@ -130,9 +135,10 @@ function headingRow(text: string): TableRow {
   });
 }
 
-function itemRow(n: number, item: ReportItem | null, section: boolean): TableRow {
+function itemRow(n: number | null, item: ReportItem | null, section: boolean): TableRow {
   return new TableRow({
-    children: [numCell(`${n}.`), contentCell(item ? articleRuns(item, section) : nilRuns())],
+    cantSplit: true,
+    children: [numCell(n == null ? "" : `${n}.`), contentCell(item ? articleRuns(item, section) : nilRuns())],
   });
 }
 
@@ -146,7 +152,7 @@ export async function buildReportDocx(payload: ReportPayload): Promise<Uint8Arra
   for (const section of payload.sections) {
     sectionRows.push(headingRow(section.heading));
     const items = section.items.length ? section.items : [null];
-    items.forEach((item, i) => sectionRows.push(itemRow(i + 1, item, true)));
+    items.forEach((item, i) => sectionRows.push(itemRow(item ? i + 1 : null, item, true)));
   }
 
   const headerChildren: Paragraph[] = [];

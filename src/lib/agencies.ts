@@ -1,5 +1,5 @@
 import type { AgencyItem } from "./types";
-import { isToday } from "./rank";
+import { isReportToday } from "./rank";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 CyberGuardWeb/1.0";
@@ -25,47 +25,79 @@ function strip(html: string): string {
     .trim();
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
+};
+
+function utcCalendarIso(day: number, monthName: string, year: number): string | null {
+  const month = MONTHS[monthName.slice(0, 3).toLowerCase()];
+  if (month == null || !day || !year) return null;
+  const ms = Date.UTC(year, month, day);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 function parseLooseDate(raw: string): string | null {
   const t = raw.trim();
+  const dmyText = t.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})$/);
+  if (dmyText) return utcCalendarIso(Number(dmyText[1]), dmyText[2], Number(dmyText[3]));
+  const dmyDash = t.match(/^(\d{2})-([A-Za-z]+)-(\d{4})$/);
+  if (dmyDash) return utcCalendarIso(Number(dmyDash[1]), dmyDash[2], Number(dmyDash[3]));
+  const ymd = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (ymd) {
+    const ms = Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
+    if (!Number.isNaN(ms)) return new Date(ms).toISOString();
+  }
   const tries = [t, t.replace("Z", "+00:00")];
   for (const x of tries) {
     const d = new Date(x);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
   }
-  const m = t.match(/(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/);
-  if (m) {
-    const d = new Date(`${m[2]} ${m[1]}, ${m[3]} UTC`);
-    if (!Number.isNaN(d.getTime())) return d.toISOString();
-  }
-  const dmy = t.match(/(\d{2})-([A-Za-z]+)-(\d{4})/);
-  if (dmy) {
-    const d = new Date(`${dmy[2]} ${dmy[1]}, ${dmy[3]} UTC`);
-    if (!Number.isNaN(d.getTime())) return d.toISOString();
-  }
   return null;
 }
 
-function todayOnly(items: AgencyItem[]): AgencyItem[] {
-  return items.filter((x) => isToday(x.pubDate));
+function reportDayOnly(items: AgencyItem[]): AgencyItem[] {
+  return items.filter((x) => isReportToday(x.pubDate));
+}
+
+function hkcertBulletinDate(card: string): string | null {
+  const released = card.match(/Release\s*Date\s*:\s*([0-9]{1,2}\s+[A-Za-z]{3}\s+[0-9]{4})/i);
+  return released?.[1] ? parseLooseDate(released[1]) : null;
 }
 
 export async function fetchHkcert(): Promise<AgencyItem[]> {
   const base = "https://www.hkcert.org/security-bulletin";
-  const html = await getText(base);
+  const html = await getText(base, 15000);
   const out: AgencyItem[] = [];
-  const cardRe = /<div[^>]*class="[^"]*listingcard__item[^"]*"[\s\S]*?<\/div>\s*<\/div>/gi;
+  const cardRe =
+    /<a[^>]*class="[^"]*listingcard__item[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
-  const cards = html.match(cardRe) ?? [];
-  for (const card of cards.length ? cards : []) {
+  while ((m = cardRe.exec(html))) {
+    const hrefRaw = m[1];
+    const card = m[2];
+    if (!hrefRaw || !/\/security-bulletin\/[^/?#]+/i.test(hrefRaw)) continue;
     const titleM = card.match(/listingcard__title[^>]*>([\s\S]*?)<\/(?:p|div|h[1-6])>/i);
-    const hrefM = card.match(/href="([^"]+)"/i);
-    const dateM = card.match(/Release\s*Date\s*:\s*([0-9]{1,2}\s+[A-Za-z]{3}\s+[0-9]{4})/i);
-    const title = strip(titleM?.[1] ?? "").replace(/\s+NEW$/i, "");
+    const title = strip(titleM?.[1] ?? "").replace(/\s+(NEW|UPDATE)$/i, "");
     if (!title) continue;
-    const href = hrefM?.[1] ? new URL(hrefM[1], base).toString() : base;
-    out.push({ title, url: href, source: "HKCERT", pubDate: dateM ? parseLooseDate(dateM[1]) : null });
+    out.push({
+      title,
+      url: new URL(hrefRaw, base).toString(),
+      source: "HKCERT",
+      pubDate: hkcertBulletinDate(card),
+    });
   }
-  return todayOnly(out);
+  return reportDayOnly(out);
 }
 
 export async function fetchGovcert(): Promise<AgencyItem[]> {
@@ -85,7 +117,7 @@ export async function fetchGovcert(): Promise<AgencyItem[]> {
       pubDate: parseLooseDate(m[1]),
     });
   }
-  return todayOnly(out);
+  return reportDayOnly(out);
 }
 
 export async function fetchCybersechub(): Promise<AgencyItem[]> {
@@ -128,7 +160,7 @@ export async function fetchCybersechub(): Promise<AgencyItem[]> {
       const dateRaw = String(rec.publishTime || rec.updateTime || rec.publishDate || rec.date || rec.createdAt || "");
       if (!title) continue;
       const pubDate = parseLooseDate(dateRaw);
-      if (pubDate && !isToday(pubDate)) {
+      if (pubDate && !isReportToday(pubDate)) {
         older = true;
         continue;
       }
@@ -146,7 +178,7 @@ export async function fetchCybersechub(): Promise<AgencyItem[]> {
     if (older) break;
     offset += rows.length;
   }
-  return todayOnly(out);
+  return reportDayOnly(out);
 }
 
 export async function fetchAgencies(): Promise<{

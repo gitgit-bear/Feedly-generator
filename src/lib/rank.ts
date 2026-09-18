@@ -28,13 +28,33 @@ const TERMS = [
   "ddos",
   "lateral movement",
   "mfa bypass",
+  "cyberattack",
+  "cyber attack",
+  "cyber-attack",
+  "remote code execution",
+  "authentication bypass",
+  "infostealer",
+  "info-stealer",
+  "business email compromise",
+  "emergency patch",
+  "out-of-band",
 ];
 
-const BOOST = ["zero-day", "zero day", "0-day", "actively exploited", "ransomware", "data breach", "cve-"];
+const BOOST = [
+  "zero-day",
+  "zero day",
+  "0-day",
+  "actively exploited",
+  "ransomware",
+  "data breach",
+  "cve-",
+  "emergency patch",
+  "out-of-band",
+];
 
 const EVENT_RE =
-  /(?:\[\s*virtual\s+event\s*\]|\bwebinars?\b|\bwebcasts?\b|\bweb[- ]?seminars?\b|\bonline\s+events?\b|\bvirtual\s+events?\b|\bregister\s+now\b)/i;
-const EVENT_URL_RE = /\/(?:events?|webinars?|webcasts?)(?:\/|$|\?)/i;
+  /(?:\[\s*virtual\s+event\s*\]|\bwebinars?\b|\bwebcasts?\b|\bweb[- ]?seminars?\b|\bonline\s+events?\b|\bvirtual\s+events?\b|\bregister\s+now\b|\bstormcast\b|\bpodcasts?\b|podcastdetail)/i;
+const EVENT_URL_RE = /\/(?:events?|webinars?|webcasts?|podcasts?|podcastdetail)(?:\/|$|\?)/i;
 
 export function isEventOrWebinar(article: Pick<Article, "title" | "url">): boolean {
   return EVENT_RE.test(article.title) || EVENT_RE.test(article.url) || EVENT_URL_RE.test(article.url);
@@ -66,6 +86,14 @@ export function isToday(iso: string | null): boolean {
     return iso.slice(0, 10) === hkTodayStamp();
   }
   return hkTodayStamp(d) === hkTodayStamp();
+}
+
+/** Report / TOP 10: use the date on the record (UTC calendar day), not HK overnight rollover. */
+export function isReportToday(iso: string | null): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  return iso.slice(0, 10) === hkTodayStamp();
 }
 
 const STOP = new Set([
@@ -173,14 +201,51 @@ export function dedupeStories(articles: Article[]): Article[] {
   return kept.sort((a, b) => (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt));
 }
 
+const PER_SITE_LIMIT = 2;
+const PER_SITE_FILL = 3;
+
+function siteKey(article: Pick<Article, "url" | "source">): string {
+  try {
+    const host = new URL(article.url).hostname.replace(/^www\./i, "").toLowerCase();
+    if (host && host !== "news.google.com") return host;
+  } catch {
+    /* fall through */
+  }
+  return article.source.trim().toLowerCase();
+}
+
+function pickWithSiteCap(ranked: Article[], cap: number, existing: Article[]): Article[] {
+  const used = new Map<string, number>();
+  const seen = new Set<string>();
+  for (const article of existing) {
+    const key = siteKey(article);
+    used.set(key, (used.get(key) ?? 0) + 1);
+    seen.add(article.id);
+  }
+  const picked = [...existing];
+  for (const article of ranked) {
+    if (picked.length >= 10) break;
+    if (seen.has(article.id)) continue;
+    const key = siteKey(article);
+    const n = used.get(key) ?? 0;
+    if (n >= cap) continue;
+    used.set(key, n + 1);
+    seen.add(article.id);
+    picked.push(article);
+  }
+  return picked;
+}
+
 export function top10(articles: Article[]): Article[] {
-  return dedupeStories(
-    articles.filter((a) => !isEventOrWebinar(a) && isToday(a.pubDate || a.fetchedAt)),
-  )
-    .sort((a, b) => {
-      const rb = relevanceScore(b) - relevanceScore(a);
-      if (Math.abs(rb) > 0.0001) return rb;
-      return (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt);
-    })
-    .slice(0, 10);
+  const ranked = dedupeStories(
+    articles.filter((a) => !isEventOrWebinar(a) && isReportToday(a.pubDate)),
+  ).sort((a, b) => {
+    const rb = relevanceScore(b) - relevanceScore(a);
+    if (Math.abs(rb) > 0.0001) return rb;
+    return (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt);
+  });
+
+  let picked = pickWithSiteCap(ranked, PER_SITE_LIMIT, []);
+  if (picked.length < 10) picked = pickWithSiteCap(ranked, PER_SITE_FILL, picked);
+  return picked;
 }

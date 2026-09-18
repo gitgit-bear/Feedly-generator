@@ -75,7 +75,7 @@ function payloadJson(payload: ReportPayload) {
 }
 
 function cacheKey(payload: ReportPayload): string {
-  return createHash("sha1").update(`exe-format-v4:${JSON.stringify(payloadJson(payload))}`).digest("hex");
+  return createHash("sha1").update(`exe-format-v6:${JSON.stringify(payloadJson(payload))}`).digest("hex");
 }
 
 async function fillWithWord(payload: ReportPayload): Promise<ExactPair> {

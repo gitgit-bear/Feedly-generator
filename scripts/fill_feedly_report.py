@@ -178,6 +178,11 @@ def _word_write_article_in_one_cell(cell: Any, item: Optional[ReportArticle], *,
     payload = f"{title}{br}{url}{br}" if section else f"{title}{br}{source}{br}{url}{br}"
     content = _word_cell_content_range(cell)
     content.Text = payload
+    try:
+        content.ParagraphFormat.KeepTogether = True
+        content.ParagraphFormat.WidowControl = True
+    except Exception:
+        pass
     inner = _word_cell_content_range(cell)
     doc = cell.Range.Document
     cell_end = int(cell.Range.End) - 1
@@ -249,6 +254,32 @@ def _word_clear_table_borders(table: Any) -> None:
         pass
 
 
+def _word_keep_rows_on_one_page(table: Any) -> None:
+    try:
+        table.Rows.AllowBreakAcrossPages = False
+    except Exception:
+        pass
+    for i in range(1, int(table.Rows.Count) + 1):
+        try:
+            table.Rows(i).AllowBreakAcrossPages = False
+        except Exception:
+            pass
+        try:
+            heading = "intelligence" in _word_plain_cell_text(table.Cell(i, 1)).lower()
+        except Exception:
+            heading = False
+        try:
+            for para in table.Rows(i).Range.Paragraphs:
+                try:
+                    para.KeepTogether = True
+                    if heading:
+                        para.KeepWithNext = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 def _word_section_slot_rows(table: Any, heading_row: int) -> List[int]:
     slots: List[int] = []
     for row in range(heading_row + 1, int(table.Rows.Count) + 1):
@@ -269,6 +300,32 @@ def _word_section_slot_rows(table: Any, heading_row: int) -> List[int]:
     return slots
 
 
+def _word_row_is_blank(table: Any, row: int) -> bool:
+    try:
+        left = _word_plain_cell_text(table.Cell(row, 1))
+    except Exception:
+        return False
+    if "intelligence from" in left.lower():
+        return False
+    right = ""
+    try:
+        right = _word_plain_cell_text(table.Cell(row, 2))
+    except Exception:
+        pass
+    return not left and not right
+
+
+def _word_delete_blank_rows_after(table: Any, after_row: int) -> None:
+    while after_row + 1 <= int(table.Rows.Count):
+        row = after_row + 1
+        if not _word_row_is_blank(table, row):
+            break
+        rows_before = int(table.Rows.Count)
+        table.Rows(row).Delete()
+        if int(table.Rows.Count) != rows_before - 1:
+            raise RuntimeError("Word split a section table; refusing to save broken layout")
+
+
 def _word_fill_section_numbered_rows(table: Any, heading_row: int, items: List[ReportArticle]) -> None:
     real = [item for item in items if not _is_nil(item)]
     slots = _word_section_slot_rows(table, heading_row)
@@ -279,7 +336,8 @@ def _word_fill_section_numbered_rows(table: Any, heading_row: int, items: List[R
     used = min(len(want), len(slots))
     for i in range(used):
         rows_before = int(table.Rows.Count)
-        _word_write_number_in_cell(table.Cell(slots[i], 1), f"{i + 1}.", proto)
+        label = f"{i + 1}." if want[i] else ""
+        _word_write_number_in_cell(table.Cell(slots[i], 1), label, proto)
         _word_write_article_in_one_cell(table.Cell(slots[i], 2), want[i], section=True)
         if int(table.Rows.Count) != rows_before:
             raise RuntimeError("Word split a section table; refusing to save broken layout")
@@ -298,6 +356,8 @@ def _word_fill_section_numbered_rows(table: Any, heading_row: int, items: List[R
         _word_write_article_in_one_cell(table.Cell(last_row, 2), item, section=True)
         if int(table.Rows.Count) != rows_before + 1:
             raise RuntimeError("Word split a section table; refusing to save broken layout")
+    if real:
+        _word_delete_blank_rows_after(table, heading_row + len(want))
 
 
 def _word_refresh_header(doc: Any, stamp: str) -> None:
@@ -419,6 +479,7 @@ def fill_template(template_path: str, out_path: str, payload: Dict[str, Any]) ->
                 if int(top_table.Rows.Count) != top_rows:
                     raise RuntimeError("Word split the TOP 10 table; refusing to save broken layout")
             _word_clear_table_borders(top_table)
+            _word_keep_rows_on_one_page(top_table)
 
         if int(document.Tables.Count) >= 2:
             sec_table = document.Tables(2)
@@ -432,6 +493,7 @@ def fill_template(template_path: str, out_path: str, payload: Dict[str, Any]) ->
                     continue
                 _word_fill_section_numbered_rows(sec_table, row, _as_list(payload.get(key)))
             _word_clear_table_borders(sec_table)
+            _word_keep_rows_on_one_page(sec_table)
 
         try:
             document.BuiltInDocumentProperties("Title").Value = os.path.splitext(os.path.basename(dst))[0]

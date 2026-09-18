@@ -21,6 +21,7 @@ function cacheKey(payload: ReportPayload): string {
   return createHash("sha1")
     .update(
       JSON.stringify({
+        layout: "keep-row-v2",
         dateStamp: payload.dateStamp,
         topItems: payload.topItems,
         sections: payload.sections,

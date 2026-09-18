@@ -38,7 +38,7 @@ type Line = { text: string; font: PDFFont; color: RGB; underline?: boolean; href
 type TableRow =
   | { kind: "heading"; text: string }
   | { kind: "spacer" }
-  | { kind: "item"; n: number; item: ReportItem | null; section: boolean };
+  | { kind: "item"; n: number | null; item: ReportItem | null; section: boolean };
 
 function latin(text: string): string {
   return Array.from(text || "")
@@ -251,13 +251,15 @@ export async function buildReportPdf(payload: ReportPayload): Promise<Uint8Array
     const lines = itemLines(row.item, row.section, fonts, textW);
     const h = rowHeight(lines.length);
     ensure(h);
-    page.drawText(`${row.n}.`, {
-      x: tableX,
-      y: y - PAD_Y - SIZE,
-      size: SIZE,
-      font: fonts.heading,
-      color: BLACK,
-    });
+    if (row.n != null) {
+      page.drawText(`${row.n}.`, {
+        x: tableX,
+        y: y - PAD_Y - SIZE,
+        size: SIZE,
+        font: fonts.heading,
+        color: BLACK,
+      });
+    }
     drawLines(lines, tableX + NUM_W, y);
     y -= h;
   };
@@ -285,7 +287,9 @@ export async function buildReportPdf(payload: ReportPayload): Promise<Uint8Array
   payload.sections.forEach((section, index) => {
     sectionRows.push({ kind: "heading", text: section.heading });
     const items = section.items.length ? section.items : [null];
-    items.forEach((item, i) => sectionRows.push({ kind: "item", n: i + 1, item, section: true }));
+    items.forEach((item, i) =>
+      sectionRows.push({ kind: "item", n: item ? i + 1 : null, item, section: true }),
+    );
     if (index < payload.sections.length - 1) sectionRows.push({ kind: "spacer" });
   });
   drawTable(sectionRows);

@@ -1,4 +1,5 @@
 import { newsletterFileStamp } from "./reportPayload";
+import type { WeeklyBrief } from "./weeklyBrief";
 
 export type ExportKind = "pdf" | "docx" | "both";
 
@@ -149,21 +150,41 @@ async function shareFiles(files: File[]): Promise<"shared" | "cancelled" | "skip
   }
 }
 
+type SavePickerOptions = {
+  suggestedName?: string;
+  id?: string;
+  startIn?: FileSystemHandle;
+  excludeAcceptAllOption?: boolean;
+  types?: Array<{ description: string; accept: Record<string, string[]> }>;
+};
+
+type DirHandle = FileSystemDirectoryHandle & {
+  requestPermission?: (opts: { mode: "readwrite" | "read" }) => Promise<PermissionState>;
+};
+
 function canUseSavePicker(): boolean {
   const w = window as Window & { showSaveFilePicker?: unknown };
   return typeof w.showSaveFilePicker === "function" && !isMobileBrowser();
 }
 
-async function saveViaPicker(kind: ExportKind): Promise<FileSystemFileHandle | null> {
+function fileStem(name: string): string {
+  return name.replace(/\.(pdf|docx?)$/i, "");
+}
+
+function isPdfName(name: string): boolean {
+  return name.toLowerCase().endsWith(".pdf");
+}
+
+async function saveViaPicker(
+  kind: ExportKind,
+  extra?: { startIn?: FileSystemHandle; suggestedName?: string },
+): Promise<FileSystemFileHandle | null> {
   if (!canUseSavePicker()) return null;
   const stamp = newsletterFileStamp();
   const docName = `Feedly News Letter ${stamp}.doc`;
   const pdfName = `Feedly News Letter ${stamp}.pdf`;
   const w = window as Window & {
-    showSaveFilePicker?: (opts?: {
-      suggestedName?: string;
-      types?: Array<{ description: string; accept: Record<string, string[]> }>;
-    }) => Promise<FileSystemFileHandle>;
+    showSaveFilePicker?: (opts?: SavePickerOptions) => Promise<FileSystemFileHandle>;
   };
   const wordType = {
     description: "Word 97-2003 Document",
@@ -176,13 +197,42 @@ async function saveViaPicker(kind: ExportKind): Promise<FileSystemFileHandle | n
   const types = kind === "pdf" ? [pdfType] : kind === "docx" ? [wordType] : [wordType, pdfType];
   try {
     return await w.showSaveFilePicker!({
-      suggestedName: kind === "pdf" ? pdfName : docName,
+      id: "feedly-export",
+      suggestedName: extra?.suggestedName ?? (kind === "pdf" ? pdfName : docName),
+      startIn: extra?.startIn,
+      excludeAcceptAllOption: true,
       types,
     });
   } catch (err) {
     if (isAbort(err)) throw err;
     return null;
   }
+}
+
+async function directoryOf(handle: FileSystemFileHandle): Promise<FileSystemDirectoryHandle | null> {
+  const file = handle as FileSystemFileHandle & { getParent?: () => Promise<DirHandle> };
+  if (typeof file.getParent !== "function") return null;
+  try {
+    const dir = await file.getParent();
+    if (typeof dir.requestPermission === "function") {
+      const perm = await dir.requestPermission({ mode: "readwrite" });
+      if (perm !== "granted") return null;
+    }
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+async function writeNamed(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  bytes: Uint8Array,
+  mime: string,
+): Promise<string> {
+  const file = await dir.getFileHandle(name, { create: true });
+  await writeFile(file, bytes, mime);
+  return file.name;
 }
 
 async function deliverFiles(
@@ -207,7 +257,10 @@ async function deliverFiles(
   return { status: "saved", files: files.map((f) => f.name) };
 }
 
-export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> {
+export type ExportProgress = (pct: number, label?: string) => void;
+
+export async function exportReportFormat(kind: ExportKind, onProgress?: ExportProgress): Promise<SaveResult> {
+  const note = (pct: number, label?: string) => onProgress?.(pct, label);
   if (isMobileBrowser()) {
     const stamp = newsletterFileStamp();
     const names =
@@ -217,16 +270,20 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
           ? [`Feedly News Letter ${stamp}.doc`]
           : [`Feedly News Letter ${stamp}.pdf`, `Feedly News Letter ${stamp}.doc`];
     try {
+      note(12, "Building report…");
       if (kind !== "both") {
         const file = await fetchReport(kind);
+        note(88, "Saving…");
         const shared = await shareFiles([toFile(file.bytes, file.name, file.mime)]);
         if (shared === "shared") return { status: "saved", files: names };
         if (shared === "cancelled") return { status: "cancelled" };
         downloadBlob(file.bytes, file.name, file.mime);
         openServerDownload(kind);
+        note(100);
         return { status: "saved", files: names };
       }
       const { pdf, docx } = await fetchReportPair();
+      note(88, "Saving…");
       const shared = await shareFiles([
         toFile(pdf.bytes, pdf.name, pdf.mime),
         toFile(docx.bytes, docx.name, docx.mime),
@@ -237,6 +294,7 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
       downloadBlob(docx.bytes, docx.name, docx.mime);
       openServerDownload("pdf");
       openServerDownload("docx");
+      note(100);
       return { status: "saved", files: names };
     } catch (err) {
       if (isAbort(err)) return { status: "cancelled" };
@@ -245,12 +303,26 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
         openServerDownload("pdf");
         openServerDownload("docx");
       }
+      note(100);
       return { status: "saved", files: names };
     }
   }
   let handle: FileSystemFileHandle | null = null;
+  let siblingHandle: FileSystemFileHandle | null = null;
+  let siblingDir: FileSystemDirectoryHandle | null = null;
   try {
+    note(8, "Choose save location…");
     handle = await saveViaPicker(kind);
+    if (handle && kind === "both") {
+      siblingDir = await directoryOf(handle);
+      if (!siblingDir) {
+        const other = isPdfName(handle.name) ? "docx" : "pdf";
+        siblingHandle = await saveViaPicker(other, {
+          startIn: handle,
+          suggestedName: `${fileStem(handle.name)}.${other === "pdf" ? "pdf" : "doc"}`,
+        });
+      }
+    }
   } catch (err) {
     if (isAbort(err)) return { status: "cancelled" };
   }
@@ -258,6 +330,7 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
   let docx: Awaited<ReturnType<typeof fetchReport>> | null = null;
   let pdf: Awaited<ReturnType<typeof fetchReport>> | null = null;
   try {
+    note(22, "Building report…");
     if (kind === "docx") docx = await fetchReport("docx");
     else if (kind === "pdf") pdf = await fetchReport("pdf");
     else {
@@ -265,22 +338,54 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
       docx = pair.docx;
       pdf = pair.pdf;
     }
+    note(86, "Saving files…");
   } catch (err) {
     return { status: "error", message: err instanceof Error ? err.message : "Export failed" };
   }
 
   if (handle) {
     try {
-      const lower = handle.name.toLowerCase();
-      if (lower.endsWith(".pdf") && pdf) {
-        await writeFile(handle, pdf.bytes, PDF_MIME);
-        if (docx && kind === "both") downloadBlob(docx.bytes, docx.name, WORD_MIME);
-        return { status: "saved", files: [handle.name, ...(kind === "both" && docx ? [docx.name] : [])] };
-      }
-      if (docx) {
-        await writeFile(handle, docx.bytes, WORD_MIME);
-        if (pdf && kind === "both") downloadBlob(pdf.bytes, pdf.name, PDF_MIME);
-        return { status: "saved", files: [handle.name, ...(kind === "both" && pdf ? [pdf.name] : [])] };
+      const primaryIsPdf = isPdfName(handle.name);
+      const primary = primaryIsPdf ? pdf : docx;
+      const secondary = primaryIsPdf ? docx : pdf;
+      if (primary) {
+        await writeFile(handle, primary.bytes, primaryIsPdf ? PDF_MIME : WORD_MIME);
+        const saved = [handle.name];
+        if (kind === "both" && secondary) {
+          const secondaryName = `${fileStem(handle.name)}.${primaryIsPdf ? "doc" : "pdf"}`;
+          const secondaryMime = primaryIsPdf ? WORD_MIME : PDF_MIME;
+          if (siblingDir && saved.length === 1) {
+            try {
+              saved.push(await writeNamed(siblingDir, secondaryName, secondary.bytes, secondaryMime));
+            } catch {
+              /* fall through to the other handle / picker */
+            }
+          }
+          if (siblingHandle && saved.length === 1) {
+            try {
+              await writeFile(siblingHandle, secondary.bytes, secondaryMime);
+              saved.push(siblingHandle.name);
+            } catch {
+              /* fall through to a second save dialog */
+            }
+          }
+          if (saved.length === 1) {
+            try {
+              const extra = await saveViaPicker(primaryIsPdf ? "docx" : "pdf", {
+                startIn: handle,
+                suggestedName: secondaryName,
+              });
+              if (extra) {
+                await writeFile(extra, secondary.bytes, secondaryMime);
+                saved.push(extra.name);
+              }
+            } catch (err) {
+              if (!isAbort(err)) throw err;
+            }
+          }
+        }
+        note(100);
+        return { status: "saved", files: saved };
       }
     } catch (err) {
       if (isAbort(err)) return { status: "cancelled" };
@@ -291,5 +396,61 @@ export async function exportReportFormat(kind: ExportKind): Promise<SaveResult> 
     ...(pdf ? [{ ...pdf, format: "pdf" as const }] : []),
     ...(docx ? [{ ...docx, format: "docx" as const }] : []),
   ];
-  return deliverFiles(files);
+  note(92, "Saving files…");
+  const result = await deliverFiles(files);
+  if (result.status === "saved") note(100);
+  return result;
+}
+
+export function weeklyBriefDownloadUrl(): string {
+  return "/api/weekly-brief?format=pdf&dl=1";
+}
+
+export async function exportWeeklyBriefPdf(
+  brief: WeeklyBrief,
+  onProgress?: ExportProgress,
+): Promise<SaveResult> {
+  const note = (pct: number, label?: string) => onProgress?.(pct, label);
+  note(12, "Building weekly brief…");
+  let handle: FileSystemFileHandle | null = null;
+  if (!isMobileBrowser()) {
+    try {
+      handle = await saveViaPicker("pdf", { suggestedName: `${brief.basename}.pdf` });
+    } catch (err) {
+      if (isAbort(err)) return { status: "cancelled" };
+    }
+  }
+  note(40, "Building one-page PDF…");
+  const res = await fetch("/api/weekly-brief", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(brief),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    return { status: "error", message: `Could not build weekly brief (${res.status})` };
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const name = `${brief.basename}.pdf`;
+  note(86, "Saving PDF…");
+  if (handle) {
+    try {
+      await writeFile(handle, bytes, PDF_MIME);
+      note(100);
+      return { status: "saved", files: [handle.name] };
+    } catch (err) {
+      if (isAbort(err)) return { status: "cancelled" };
+    }
+  }
+  if (isMobileBrowser()) {
+    const shared = await shareFiles([toFile(bytes, name, PDF_MIME)]);
+    if (shared === "shared") return { status: "saved", files: [name] };
+    if (shared === "cancelled") return { status: "cancelled" };
+    downloadBlob(bytes, name, PDF_MIME);
+    note(100);
+    return { status: "saved", files: [name] };
+  }
+  downloadBlob(bytes, name, PDF_MIME);
+  note(100);
+  return { status: "saved", files: [name] };
 }

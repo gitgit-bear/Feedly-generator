@@ -24,7 +24,7 @@ export function renderReportHtml(payload: ReportPayload): string {
   const section = (heading: string, items: ReportItem[]) => {
     if (!items.length) {
       return `<tr><td colspan="2" class="head">${esc(heading)}</td></tr>
-        <tr><td class="num">1.</td><td>${block(null, true)}</td></tr>`;
+        <tr><td class="num"></td><td>${block(null, true)}</td></tr>`;
     }
     return (
       `<tr><td colspan="2" class="head">${esc(heading)}</td></tr>` +

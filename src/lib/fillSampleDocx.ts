@@ -22,7 +22,7 @@ function run(text: string, color: string, italic = false): string {
 }
 
 function para(inner: string): string {
-  return `<w:p><w:pPr><w:widowControl/><w:autoSpaceDE w:val="0"/><w:autoSpaceDN w:val="0"/><w:adjustRightInd w:val="0"/><w:jc w:val="both"/></w:pPr>${inner}</w:p>`;
+  return `<w:p><w:pPr><w:keepLines/><w:widowControl/><w:autoSpaceDE w:val="0"/><w:autoSpaceDN w:val="0"/><w:adjustRightInd w:val="0"/><w:jc w:val="both"/></w:pPr>${inner}</w:p>`;
 }
 
 function br(): string {
@@ -41,6 +41,16 @@ function articleParas(item: ReportItem | null, section: boolean, rid: string | n
   if (!section) inner += run(`${item.source} `, "12A2C6") + br();
   inner += linkRun(item.url, rid) + br();
   return para(inner);
+}
+
+function preventRowSplit(xml: string): string {
+  return xml.replace(/<w:tr\b[\s\S]*?<\/w:tr>/g, (row) => {
+    if (/<w:cantSplit\b/.test(row)) return row;
+    if (/<w:trPr[ >]/.test(row)) {
+      return row.replace(/<w:trPr(\s[^>]*)?>/, (m) => `${m}<w:cantSplit/>`);
+    }
+    return row.replace(/(<w:tr\b[^>]*>)/, `$1<w:trPr><w:cantSplit/></w:trPr>`);
+  });
 }
 
 function stripTableBorders(xml: string): string {
@@ -65,13 +75,15 @@ function setCellParagraphs(cell: string, paragraphs: string): string {
   return cell.replace(/(<w:tcPr>[\s\S]*?<\/w:tcPr>)[\s\S]*<\/w:tc>$/, `$1${paragraphs}</w:tc>`);
 }
 
-function setRowNumber(row: string, n: number): string {
+function setRowNumber(row: string, n: number | null): string {
+  const label = n == null ? "" : `${n}.`;
   if (/<w:t>[0-9]+\.<\/w:t>/.test(row)) {
-    return row.replace(/<w:t>[0-9]+\.<\/w:t>/, `<w:t>${n}.</w:t>`);
+    return row.replace(/<w:t>[0-9]+\.<\/w:t>/, `<w:t>${label}</w:t>`);
   }
+  if (!label) return row;
   return row.replace(
     /(<w:tcPr>[\s\S]*?<\/w:tcPr><w:p[\s\S]*?<\/w:pPr>)(<\/w:p><\/w:tc>)/,
-    `$1<w:r><w:rPr><w:rFonts w:ascii="MicrosoftYaHei" w:eastAsia="MicrosoftYaHei" w:hAnsi="MicrosoftYaHei" w:cs="MicrosoftYaHei"/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr><w:t>${n}.</w:t></w:r>$2`,
+    `$1<w:r><w:rPr><w:rFonts w:ascii="MicrosoftYaHei" w:eastAsia="MicrosoftYaHei" w:hAnsi="MicrosoftYaHei" w:cs="MicrosoftYaHei"/><w:sz w:val="26"/><w:szCs w:val="26"/></w:rPr><w:t>${label}</w:t></w:r>$2`,
   );
 }
 
@@ -81,6 +93,10 @@ function rowPlainText(row: string): string {
 
 function isAgencyHeading(row: string): boolean {
   return /intelligence from /i.test(rowPlainText(row));
+}
+
+function isBlankAgencyRow(row: string): boolean {
+  return !isAgencyHeading(row) && !rowPlainText(row);
 }
 
 function isAgencySlot(row: string): boolean {
@@ -201,11 +217,18 @@ export async function fillSampleDocx(payload: ReportPayload): Promise<Uint8Array
     const items = payload.sections[s]?.items?.length ? payload.sections[s].items : [null];
     const proto = rows[slots[0]];
     const built = items.map((item, i) => {
-      const row = setRowNumber(proto, i + 1);
+      const row = setRowNumber(proto, item ? i + 1 : null);
       return setRowBody(row, articleParas(item, true, takeRid(item)));
     });
+    let lastIdx = slots[slots.length - 1];
+    if (payload.sections[s]?.items?.length) {
+      for (let i = lastIdx + 1; i < rows.length; i += 1) {
+        if (!isBlankAgencyRow(rows[i])) break;
+        lastIdx = i;
+      }
+    }
     const start = document.indexOf(rows[headingIdx]);
-    const last = rows[slots[slots.length - 1]];
+    const last = rows[lastIdx];
     const end = document.indexOf(last, start) + last.length;
     if (start < 0 || end < last.length) {
       throw new Error(`Sample template section was not found: ${agencyHeadings[s]}`);
@@ -213,7 +236,7 @@ export async function fillSampleDocx(payload: ReportPayload): Promise<Uint8Array
     document = `${document.slice(0, start)}${rows[headingIdx]}${built.join("")}${document.slice(end)}`;
   }
 
-  document = stripTableBorders(document);
+  document = preventRowSplit(stripTableBorders(document));
 
   zip.file("word/document.xml", document);
   zip.file("word/_rels/document.xml.rels", rels);
