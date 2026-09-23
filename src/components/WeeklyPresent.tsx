@@ -1,13 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 import type { BriefLevel, BriefTopic, WeeklyBrief } from "@/lib/weeklyBrief";
-
-function levelWord(level: BriefLevel): string {
-  if (level === "red") return "RED · ACTION THIS WEEK";
-  if (level === "amber") return "AMBER · DECIDE THIS WEEK";
-  return "GREEN · AWARENESS ONLY";
-}
 
 type Slide =
   | { kind: "title" }
@@ -15,10 +10,10 @@ type Slide =
   | { kind: "topic"; topic: BriefTopic; index: number; total: number }
   | { kind: "asks"; topics: BriefTopic[] };
 
-function demoAssets(topics: BriefTopic[]): string[] {
+function demoAssets(topics: BriefTopic[], fallback: string): string[] {
   const wanted = topics.filter((topic) => topic.assetId === "edge" || topic.assetId === "virt");
   const labels = [...new Set((wanted.length ? wanted : topics.slice(0, 1)).map((topic) => topic.asset))];
-  return labels.length ? labels : ["Management console"];
+  return labels.length ? labels : [fallback];
 }
 
 export default function WeeklyPresent({
@@ -28,11 +23,12 @@ export default function WeeklyPresent({
   brief: WeeklyBrief;
   onClose: () => void;
 }) {
+  const { t } = useLocale();
   const liveTopics = useMemo(() => brief.topics.filter((topic) => topic.url), [brief.topics]);
   const slides = useMemo<Slide[]>(
     () => [
       { kind: "title" },
-      { kind: "demo", assets: demoAssets(liveTopics) },
+      { kind: "demo", assets: demoAssets(liveTopics, t("presentMgmtConsole")) },
       ...liveTopics.map((topic, index) => ({
         kind: "topic" as const,
         topic,
@@ -41,7 +37,7 @@ export default function WeeklyPresent({
       })),
       { kind: "asks", topics: liveTopics },
     ],
-    [liveTopics],
+    [liveTopics, t],
   );
   const [page, setPage] = useState(0);
   const last = slides.length - 1;
@@ -52,6 +48,9 @@ export default function WeeklyPresent({
     },
     [last],
   );
+
+  const levelWord = (level: BriefLevel) =>
+    level === "red" ? t("presentRed") : level === "amber" ? t("presentAmber") : t("presentGreen");
 
   useEffect(() => {
     const root = document.documentElement;
@@ -96,12 +95,12 @@ export default function WeeklyPresent({
   const slide = slides[page];
 
   return (
-    <div className={`present-root present-${brief.overall}`} role="dialog" aria-modal="true" aria-label="Weekly management presentation">
-      <button type="button" className="present-hit present-hit-prev" aria-label="Previous slide" onClick={() => go(page - 1)} />
-      <button type="button" className="present-hit present-hit-next" aria-label="Next slide" onClick={() => go(page + 1)} />
+    <div className={`present-root present-${brief.overall}`} role="dialog" aria-modal="true" aria-label={t("presentAria")}>
+      <button type="button" className="present-hit present-hit-prev" aria-label={t("presentPrev")} onClick={() => go(page - 1)} />
+      <button type="button" className="present-hit present-hit-next" aria-label={t("presentNext")} onClick={() => go(page + 1)} />
 
       <header className="present-top">
-        <p>CyberGuard · Weekly management brief</p>
+        <p>{t("presentHeader")}</p>
         <p>
           {page + 1} / {slides.length}
         </p>
@@ -114,70 +113,70 @@ export default function WeeklyPresent({
             <p className={`present-light present-light-${brief.overall}`}>{levelWord(brief.overall)}</p>
             <h1 className="present-title">{brief.summary}</h1>
             <p className="present-sub">
-              {liveTopics.length} stories · {brief.scanned} unique headlines scanned · 10 minutes
+              {t("presentSub", { stories: liveTopics.length, scanned: brief.scanned })}
             </p>
-            <p className="present-say">Say this: we read hundreds of stories. You get three. Red means a decision before we leave.</p>
+            <p className="present-say">{t("presentSayTitle")}</p>
           </div>
         ) : null}
 
         {slide.kind === "demo" ? (
           <div className="present-slide">
-            <p className="present-kicker">Safe demonstration · no exploit</p>
-            <h1 className="present-title present-title-story">What unauthenticated access means</h1>
-            <p className="present-sub">No phishing. No stolen password. If the management port is on the internet, the box can answer anyway.</p>
+            <p className="present-kicker">{t("presentDemoKicker")}</p>
+            <h1 className="present-title present-title-story">{t("presentDemoTitle")}</h1>
+            <p className="present-sub">{t("presentDemoSub")}</p>
             <div className="present-demo">
               <div className="present-demo-row present-demo-bad">
-                <p className="present-demo-label">This week’s risk</p>
+                <p className="present-demo-label">{t("presentDemoRisk")}</p>
                 <div className="present-flow">
-                  <span>Internet</span>
+                  <span>{t("presentInternet")}</span>
                   <i />
-                  <span>Exposed admin port</span>
+                  <span>{t("presentExposed")}</span>
                   <i />
-                  <span>Full control</span>
+                  <span>{t("presentFullControl")}</span>
                 </div>
-                <p className="present-demo-note">Applies this week to: {slide.assets.join(" · ")}</p>
+                <p className="present-demo-note">{t("presentApplies", { assets: slide.assets.join(" · ") })}</p>
               </div>
               <div className="present-demo-row present-demo-good">
-                <p className="present-demo-label">The control we want</p>
+                <p className="present-demo-label">{t("presentControl")}</p>
                 <div className="present-flow">
-                  <span>Internet</span>
+                  <span>{t("presentInternet")}</span>
                   <i />
-                  <span>No admin port outside</span>
+                  <span>{t("presentNoPort")}</span>
                   <i />
-                  <span>Staff must log in inside</span>
+                  <span>{t("presentStaffLogin")}</span>
                 </div>
-                <p className="present-demo-note">If the port is not on the internet, these stories are monitoring — not an emergency meeting.</p>
+                <p className="present-demo-note">{t("presentIfPort")}</p>
               </div>
             </div>
-            <p className="present-say">Say this: we are not showing an attack. We are showing why an internet-facing management port is the whole issue.</p>
+            <p className="present-say">{t("presentSayDemo")}</p>
           </div>
         ) : null}
 
         {slide.kind === "topic" ? (
           <div className="present-slide">
             <p className="present-kicker">
-              Story {slide.index + 1} of {slide.total} · {slide.topic.asset}
+              {t("presentStoryKicker", { n: slide.index + 1, total: slide.total, asset: slide.topic.asset })}
             </p>
             <p className={`present-light present-light-${slide.topic.level}`}>{slide.topic.level.toUpperCase()}</p>
             <h1 className="present-title present-title-story">{slide.topic.title}</h1>
             <div className="present-blocks">
               <p>
-                <span>Why it matters</span>
+                <span>{t("presentWhy")}</span>
                 {slide.topic.why}
               </p>
               <p>
-                <span>Ask</span>
+                <span>{t("presentAsk")}</span>
                 {slide.topic.ask}
               </p>
             </div>
-            <p className="present-say">Say this: {slide.topic.say}</p>
+            <p className="present-say">{t("presentSayPrefix", { text: slide.topic.say })}</p>
           </div>
         ) : null}
 
         {slide.kind === "asks" ? (
           <div className="present-slide">
-            <p className="present-kicker">What we need before we leave</p>
-            <h1 className="present-title">Three decisions</h1>
+            <p className="present-kicker">{t("presentNeedKicker")}</p>
+            <h1 className="present-title">{t("presentDecisions")}</h1>
             <ol className="present-asks">
               {slide.topics.map((topic, i) => (
                 <li key={topic.url || topic.title}>
@@ -188,14 +187,14 @@ export default function WeeklyPresent({
                 </li>
               ))}
             </ol>
-            <p className="present-say">Say this: yes, no, or a named owner. Then we stop.</p>
+            <p className="present-say">{t("presentSayEnd")}</p>
           </div>
         ) : null}
       </div>
 
       <footer className="present-nav">
         <button type="button" className="present-nav-btn" onClick={() => go(page - 1)} disabled={page === 0}>
-          Back
+          {t("presentBack")}
         </button>
         <div className="present-dots" aria-hidden>
           {slides.map((item, i) => (
@@ -209,15 +208,15 @@ export default function WeeklyPresent({
         </div>
         {page === last ? (
           <button type="button" className="present-nav-btn present-nav-end" onClick={onClose}>
-            End
+            {t("presentEnd")}
           </button>
         ) : (
           <button type="button" className="present-nav-btn" onClick={() => go(page + 1)}>
-            Next
+            {t("presentNextBtn")}
           </button>
         )}
         <button type="button" className="present-exit" onClick={onClose}>
-          Esc
+          {t("presentEsc")}
         </button>
       </footer>
     </div>

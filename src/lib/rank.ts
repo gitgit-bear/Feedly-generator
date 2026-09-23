@@ -236,16 +236,37 @@ function pickWithSiteCap(ranked: Article[], cap: number, existing: Article[]): A
   return picked;
 }
 
-export function top10(articles: Article[]): Article[] {
-  const ranked = dedupeStories(
-    articles.filter((a) => !isEventOrWebinar(a) && isReportToday(a.pubDate)),
-  ).sort((a, b) => {
-    const rb = relevanceScore(b) - relevanceScore(a);
-    if (Math.abs(rb) > 0.0001) return rb;
-    return (b.pubDate || b.fetchedAt).localeCompare(a.pubDate || a.fetchedAt);
-  });
+function articleTime(article: Pick<Article, "pubDate" | "fetchedAt">): string {
+  return article.pubDate || article.fetchedAt || "";
+}
 
-  let picked = pickWithSiteCap(ranked, PER_SITE_LIMIT, []);
+function pickTop10Pool(ranked: Article[], existing: Article[]): Article[] {
+  let picked = pickWithSiteCap(ranked, PER_SITE_LIMIT, existing);
   if (picked.length < 10) picked = pickWithSiteCap(ranked, PER_SITE_FILL, picked);
   return picked;
+}
+
+/** Prefer report-today stories; if fewer than 10, backfill by newest pub time (e.g. 22/9 23:59 → earlier). */
+export function top10(articles: Article[]): Article[] {
+  const eligible = dedupeStories(articles.filter((a) => !isEventOrWebinar(a) && Boolean(articleTime(a))));
+
+  const todayRanked = eligible
+    .filter((a) => isReportToday(a.pubDate))
+    .sort((a, b) => {
+      const rb = relevanceScore(b) - relevanceScore(a);
+      if (Math.abs(rb) > 0.0001) return rb;
+      return articleTime(b).localeCompare(articleTime(a));
+    });
+
+  let picked = pickTop10Pool(todayRanked, []);
+
+  if (picked.length < 10) {
+    const taken = new Set(picked.map((a) => a.id));
+    const olderRanked = eligible
+      .filter((a) => !taken.has(a.id) && !picked.some((p) => sameStory(p, a)))
+      .sort((a, b) => articleTime(b).localeCompare(articleTime(a)));
+    picked = pickTop10Pool(olderRanked, picked);
+  }
+
+  return picked.slice(0, 10);
 }

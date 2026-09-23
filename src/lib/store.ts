@@ -20,6 +20,7 @@ const EMPTY: CacheState = {
   articles: [],
   agencies: { hkcert: [], govcert: [], cybersechub: [] },
   lastRefresh: null,
+  sourceHealth: [],
 };
 
 let memory: CacheState | null = null;
@@ -33,6 +34,7 @@ export async function loadCache(): Promise<CacheState> {
       articles: parsed.articles ?? [],
       agencies: parsed.agencies ?? EMPTY.agencies,
       lastRefresh: parsed.lastRefresh ?? null,
+      sourceHealth: parsed.sourceHealth ?? [],
     };
     return memory;
   } catch {

@@ -7,7 +7,11 @@ import { exportReportFormat, exportWeeklyBriefPdf, isMobileBrowser, reportDownlo
 import { newsletterFileStamp } from "@/lib/reportPayload";
 import { polishGoogleNewsArticle } from "@/lib/googleNews";
 import { buildWeeklyBrief } from "@/lib/weeklyBrief";
+import { EXPORT_PROGRESS_KEYS, type MessageKey } from "@/lib/i18n";
+import { useLocale } from "@/components/LocaleProvider";
 import WeeklyBriefSheet from "@/components/WeeklyBriefSheet";
+import IntelligenceWorkspace from "@/components/workspace/IntelligenceWorkspace";
+import { loadDisabledSources } from "@/lib/analystStore";
 
 type Chip = "today" | "all" | "unread" | "breaches" | "vulns" | "malware" | "phishing" | "apt" | "patch";
 
@@ -16,17 +20,21 @@ type Snapshot = CacheState & {
   top10?: Article[];
 };
 
-const CHIPS: { id: Chip; label: string }[] = [
-  { id: "today", label: "Today" },
-  { id: "all", label: "All" },
-  { id: "unread", label: "Unread" },
-  { id: "breaches", label: "Breaches" },
-  { id: "vulns", label: "Vulns" },
-  { id: "malware", label: "Malware" },
-  { id: "phishing", label: "Phishing" },
-  { id: "apt", label: "APT" },
-  { id: "patch", label: "Patch" },
-];
+type StatusMsg = { key: MessageKey; vars?: Record<string, string | number> } | { raw: string };
+
+const CHIPS: Chip[] = ["today", "all", "unread", "breaches", "vulns", "malware", "phishing", "apt", "patch"];
+
+const CHIP_KEYS: Record<Chip, MessageKey> = {
+  today: "chipToday",
+  all: "chipAll",
+  unread: "chipUnread",
+  breaches: "chipBreaches",
+  vulns: "chipVulns",
+  malware: "chipMalware",
+  phishing: "chipPhishing",
+  apt: "chipApt",
+  patch: "chipPatch",
+};
 
 const TOPIC_CHIPS = ["breaches", "vulns", "malware", "phishing", "apt", "patch"] as const;
 
@@ -85,21 +93,21 @@ function shouldShowDescription(title: string, description: string, source: strin
   return true;
 }
 
-function relative(iso: string | null): string {
-  if (!iso) return "unknown";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "unknown";
-  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+function relative(iso: string | null, t: (key: MessageKey, vars?: Record<string, string | number>) => string): string {
+  if (!iso) return t("timeUnknown");
+  const t0 = new Date(iso).getTime();
+  if (Number.isNaN(t0)) return t("timeUnknown");
+  const mins = Math.max(0, Math.round((Date.now() - t0) / 60000));
+  if (mins < 1) return t("timeJustNow");
+  if (mins < 60) return t("timeMinutes", { n: mins });
   const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
+  if (hrs < 24) return t("timeHours", { n: hrs });
+  return t("timeDays", { n: Math.round(hrs / 24) });
 }
 
 type RefreshEvent =
   | { type: "start"; total: number }
-  | { type: "progress"; done: number; total: number; source: string; ok?: boolean }
+  | { type: "progress"; done: number; total: number; source: string; sourceId?: string; ok?: boolean; error?: string | null; count?: number }
   | { type: "done"; snapshot?: Snapshot }
   | { type: "error"; message?: string };
 
@@ -120,7 +128,7 @@ async function readRefreshStream(
     const event = JSON.parse(raw) as RefreshEvent;
     onEvent(event);
     if (event.type === "done" && event.snapshot) snapshot = event.snapshot;
-    if (event.type === "error") throw new Error(event.message || "Refresh failed");
+    if (event.type === "error") throw new Error(event.message || "refresh-failed");
   };
 
   while (true) {
@@ -143,8 +151,9 @@ async function readRefreshStream(
 }
 
 export default function NewsApp() {
+  const { locale, setLocale, t } = useLocale();
   const [data, setData] = useState<Snapshot | null>(null);
-  const [ready, setReady] = useState(false);
+  const [ready, setReady] = useState(true);
   const [chip, setChip] = useState<Chip>("today");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
@@ -152,9 +161,14 @@ export default function NewsApp() {
   const [exportOpen, setExportOpen] = useState(false);
   const [briefOpen, setBriefOpen] = useState(false);
   const [pct, setPct] = useState(0);
-  const [status, setStatus] = useState("Connecting to feeds…");
+  const [status, setStatus] = useState<StatusMsg>({ key: "connecting" });
+  const [sourceProgress, setSourceProgress] = useState<
+    Array<{ sourceId: string; source: string; ok?: boolean; pending?: boolean; error?: string | null; count?: number }>
+  >([]);
+  const [failedCount, setFailedCount] = useState(0);
   const busyRef = useRef(false);
   const realProgressRef = useRef(false);
+  const statusText = "raw" in status ? status.raw : t(status.key, status.vars);
 
   const applySnapshot = useCallback((snap: Snapshot) => {
     const articles = dedupeStories((snap.articles ?? []).map(polishGoogleNewsArticle));
@@ -182,10 +196,12 @@ export default function NewsApp() {
   }, [applySnapshot]);
 
   const pullFeeds = useCallback(async () => {
-    setStatus("Loading feeds…");
+    setStatus({ key: "loadingFeeds" });
     const res = await fetch("/api/refresh", {
       method: "POST",
       cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skip: loadDisabledSources() }),
     });
     if (!res.ok) throw new Error(`Refresh failed (${res.status})`);
 
@@ -196,7 +212,7 @@ export default function NewsApp() {
       applySnapshot(json.snapshot);
       realProgressRef.current = true;
       setPct(100);
-      setStatus("Ready");
+      setStatus({ key: "ready" });
       return json.snapshot;
     }
 
@@ -206,23 +222,39 @@ export default function NewsApp() {
       realProgressRef.current = true;
       if (event.type === "start") {
         setPct(4);
-        setStatus(`Refreshing 0/${event.total}…`);
+        setFailedCount(0);
+        setSourceProgress([]);
+        setStatus({ key: "refreshingCount", vars: { done: 0, total: event.total } });
         return;
       }
       if (event.type === "progress") {
         const next = event.total ? Math.round((event.done / event.total) * 100) : 0;
         setPct(Math.min(99, Math.max(4, next)));
-        setStatus(
-          event.ok === false
-            ? `Refreshing ${event.done}/${event.total} · ${event.source} failed`
-            : `Refreshing ${event.done}/${event.total} · ${event.source}`,
-        );
+        setSourceProgress((prev) => {
+          const id = event.sourceId || event.source;
+          return [
+            ...prev.filter((row) => row.sourceId !== id),
+            {
+              sourceId: id,
+              source: event.source,
+              ok: event.ok,
+              error: event.error,
+              count: event.count,
+              pending: event.ok == null,
+            },
+          ];
+        });
+        if (event.ok === false) setFailedCount((n) => n + 1);
+        setStatus({
+          key: event.ok === false ? "refreshingSourceFailed" : "refreshingSource",
+          vars: { done: event.done, total: event.total, source: event.source },
+        });
       }
     });
 
     applySnapshot(snapshot);
     setPct(100);
-    setStatus("Ready");
+    setStatus({ key: "ready" });
     return snapshot;
   }, [applySnapshot]);
 
@@ -231,13 +263,13 @@ export default function NewsApp() {
     busyRef.current = true;
     setBusy(true);
     setPct(0);
-    setStatus("Refreshing feeds… 0%");
+    setStatus({ key: "refreshingZero" });
     realProgressRef.current = false;
     try {
       await pullFeeds();
-      setStatus("Up to date");
+      setStatus({ key: "upToDate" });
     } catch {
-      setStatus("Refresh failed");
+      setStatus({ key: "refreshFailed" });
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -259,30 +291,30 @@ export default function NewsApp() {
     if (stored) {
       applySnapshot(stored);
       setPct(100);
-      setStatus("Updating…");
+      setStatus({ key: "updating" });
       setReady(true);
     }
 
     void (async () => {
       try {
-        if (!stored) setStatus("Loading feeds…");
+        if (!stored) setStatus({ key: "loadingFeeds" });
         const res = await fetch("/api/articles", { cache: "no-store" });
         const json = (await res.json()) as Snapshot;
         if (cancelled) return;
         if (json.articles?.length) {
           applySnapshot(json);
           setPct(100);
-          setStatus("Ready");
+          setStatus({ key: "ready" });
           setReady(true);
           return;
         }
         const snap = await pullFeeds();
         if (cancelled) return;
-        if (!snap.articles.length) setStatus("Ready — no headlines yet");
+        if (!snap.articles.length) setStatus({ key: "readyEmpty" });
         setPct(100);
         setReady(true);
       } catch {
-        setStatus(stored ? "Ready" : "Load failed — opening last cache");
+        setStatus({ key: stored ? "ready" : "loadFailedCache" });
         if (!stored) await load().catch(() => undefined);
         if (!cancelled) {
           setPct(100);
@@ -355,34 +387,46 @@ export default function NewsApp() {
   }
 
   const agencies = data?.agencies ?? { hkcert: [], govcert: [], cybersechub: [] };
-  const ranked = top10(data?.articles ?? []);
   const fileStamp = newsletterFileStamp();
-  const weekly = useMemo(() => buildWeeklyBrief(data?.articles ?? []), [data]);
+  const weekly = useMemo(() => buildWeeklyBrief(data?.articles ?? [], new Date(), locale), [data, locale]);
+
+  function applyExportLabel(label?: string) {
+    if (!label) return;
+    const key = EXPORT_PROGRESS_KEYS[label];
+    setStatus(key ? { key } : { raw: label });
+  }
 
   async function exportReport(kind: ExportKind) {
     if (exporting || busy) return;
     setExporting(true);
     setPct(6);
-    setStatus(kind === "both" ? "Exporting Word + PDF…" : `Exporting ${kind === "pdf" ? "PDF" : "Word"}…`);
+    setStatus({
+      key: kind === "both" ? "exportingBoth" : kind === "pdf" ? "exportingPdf" : "exportingWord",
+    });
     try {
       const result = await exportReportFormat(kind, (next, label) => {
         setPct((p) => Math.max(p, next));
-        if (label) setStatus(label);
+        applyExportLabel(label);
       });
       if (result.status === "cancelled") {
-        setStatus("Export cancelled");
+        setStatus({ key: "exportCancelled" });
         return;
       }
       if (result.status === "error") {
-        setStatus(result.message);
+        setStatus({ raw: result.message });
         return;
       }
       setPct(100);
       setExportOpen(false);
-      const where = result.folder ? ` in ${result.folder}` : "";
-      setStatus(`Saved ${result.files.join(" + ")}${where}`);
+      setStatus(
+        result.folder
+          ? { key: "savedFilesIn", vars: { files: result.files.join(" + "), folder: result.folder } }
+          : { key: "savedFiles", vars: { files: result.files.join(" + ") } },
+      );
     } catch (err) {
-      setStatus(err instanceof Error ? `Export failed: ${err.message}` : "Export failed");
+      setStatus(
+        err instanceof Error ? { key: "exportFailedDetail", vars: { message: err.message } } : { key: "exportFailed" },
+      );
     } finally {
       setExporting(false);
       setTimeout(() => setPct(0), 800);
@@ -393,24 +437,27 @@ export default function NewsApp() {
     if (exporting || busy) return;
     setExporting(true);
     setPct(6);
-    setStatus("Exporting weekly brief…");
+    setStatus({ key: "exportingWeekly" });
     try {
-      const result = await exportWeeklyBriefPdf(weekly, (next, label) => {
+      const pdfBrief = locale === "en" ? weekly : buildWeeklyBrief(data?.articles ?? [], new Date(), "en");
+      const result = await exportWeeklyBriefPdf(pdfBrief, (next, label) => {
         setPct((p) => Math.max(p, next));
-        if (label) setStatus(label);
+        applyExportLabel(label);
       });
       if (result.status === "cancelled") {
-        setStatus("Export cancelled");
+        setStatus({ key: "exportCancelled" });
         return;
       }
       if (result.status === "error") {
-        setStatus(result.message);
+        setStatus({ raw: result.message });
         return;
       }
       setPct(100);
-      setStatus(`Saved ${result.files.join(" + ")}`);
+      setStatus({ key: "savedFiles", vars: { files: result.files.join(" + ") } });
     } catch (err) {
-      setStatus(err instanceof Error ? `Export failed: ${err.message}` : "Export failed");
+      setStatus(
+        err instanceof Error ? { key: "exportFailedDetail", vars: { message: err.message } } : { key: "exportFailed" },
+      );
     } finally {
       setExporting(false);
       setTimeout(() => setPct(0), 800);
@@ -419,143 +466,51 @@ export default function NewsApp() {
 
   const working = busy || exporting;
 
-  if (!ready) {
-    return (
-      <div className="cyber-root">
-        <div className="cyber-bg" />
-        <div className="cyber-scan" />
-        <div className="cyber-beam" />
-        <div className="boot-screen">
-          <div className="hud-panel boot-card">
-            <div className="mx-auto mb-4 flex justify-center">
-              <ShieldMark />
-            </div>
-            <p className="hud-kicker">SOC feed · HK</p>
-            <h1 className="hud-title mt-1">CyberGuard Intelligence</h1>
-            <p className="boot-pct">{Math.min(100, Math.max(0, pct))}%</p>
-            <div className="boot-meter" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
-              <span style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} />
-            </div>
-            <p className="boot-status">{status}</p>
-          </div>
-        </div>
-      </div>
-    );
+  async function retrySource(sourceId: string) {
+    if (busyRef.current || exporting) return;
+    busyRef.current = true;
+    setBusy(true);
+    setStatus({ key: "updating" });
+    try {
+      const res = await fetch("/api/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ sourceId }),
+        cache: "no-store",
+      });
+      const json = (await res.json()) as { snapshot?: Snapshot };
+      if (json.snapshot) applySnapshot(json.snapshot);
+      setSourceProgress((prev) =>
+        prev.map((row) => (row.sourceId === sourceId ? { ...row, ok: true, pending: false, error: null } : row)),
+      );
+      setStatus({ key: "upToDate" });
+    } catch {
+      setStatus({ key: "refreshFailed" });
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   }
 
   return (
-    <div className="cyber-root">
-      <div className="cyber-bg" />
-      <div className="cyber-scan" />
-      <div className="cyber-beam" />
-      <div className="hud-shell">
-        <header className="hud-header">
-          <div className="hud-header-inner">
-            <div className="hud-toolbar">
-              <ShieldMark />
-              <div className="min-w-0 hud-branding">
-                <p className="hud-kicker">SOC feed · HK</p>
-                <h1 className="hud-title">
-                  CyberGuard<span className="title-rest"> Intelligence</span>
-                </h1>
-                <p className="hud-status mt-0.5 flex items-center gap-2">
-                  <span className={working ? "live-dot live-dot-busy" : "live-dot"} />
-                  {status}
-                </p>
-              </div>
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search headlines, CVE…"
-                className="hud-input hud-search"
-                enterKeyHint="search"
-                autoCapitalize="off"
-                autoCorrect="off"
-              />
-              <div className="hud-actions">
-                <button type="button" onClick={() => setBriefOpen(true)} disabled={working} className="hud-btn disabled:opacity-60">
-                  Weekly
-                </button>
-                <button type="button" onClick={() => setExportOpen(true)} disabled={working} className="hud-btn hud-btn-primary disabled:opacity-60">
-                  {exporting ? `${pct}%` : "Export"}
-                </button>
-                <button type="button" onClick={() => void refresh()} disabled={working} className="hud-btn disabled:opacity-60">
-                  {busy ? `${pct}%` : "Refresh"}
-                </button>
-              </div>
-            </div>
-            <div className="hud-chips">
-              {CHIPS.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => setChip(c.id)}
-                  className={chip === c.id ? "hud-chip hud-chip-on" : "hud-chip"}
-                >
-                  {c.label}
-                  <span className="hud-chip-count">{counts[c.id]}</span>
-                </button>
-              ))}
-              <div className="hud-meter-wrap">
-                <span className="w-10 text-right text-xs font-bold text-[#3ce7ff]">{working ? `${pct}%` : ""}</span>
-                <div className="hud-meter">
-                  <span style={{ width: `${working ? pct : 0}%` }} />
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <main className="hud-main">
-          <section className="feed-col space-y-3 sm:space-y-4">
-            {filtered.length === 0 ? (
-              <div className="hud-panel p-8 text-center text-[#8ea0c4]">
-                {busy ? "Updating today’s feeds…" : "No headlines for this filter yet."}
-              </div>
-            ) : (
-              filtered.slice(0, 40).map((a) => (
-                <article
-                  key={a.id}
-                  className={`hud-panel hud-card feed-card ${a.read ? "hud-card-read" : ""}`}
-                  onMouseMove={(event) => tiltCard(event.currentTarget, event.clientX, event.clientY)}
-                  onMouseLeave={(event) => resetTilt(event.currentTarget)}
-                >
-                  <div className="mb-2 flex items-center justify-between gap-3 text-[#8ea0c4]">
-                    <span className="hud-badge">{a.source}</span>
-                    <span className="shrink-0 text-[0.88rem]">{relative(a.pubDate || a.fetchedAt)}</span>
-                  </div>
-                  <a href={a.url} target="_blank" rel="noreferrer" className="hud-link">
-                    {a.title}
-                  </a>
-                  {a.description && shouldShowDescription(a.title, a.description, a.source) ? (
-                    <p className="hud-desc line-clamp-2">{a.description}</p>
-                  ) : null}
-                  <div className="mt-3 flex flex-wrap items-center gap-3 text-[0.95rem]">
-                    <button onClick={() => void toggleRead(a)} className="min-h-11 font-medium text-[#2ee9c7] hover:underline">
-                      {a.read ? "Mark unread" : "Mark read"}
-                    </button>
-                    {relevanceScore(a) > 0.15 ? (
-                      <span className="rounded-full border border-[#b39cff]/40 bg-[#b39cff]/10 px-2 py-0.5 text-[#d2c4ff]">
-                        High signal
-                      </span>
-                    ) : null}
-                  </div>
-                </article>
-              ))
-            )}
-          </section>
-
-          <aside className="intel-rail">
-            <button type="button" className="hud-panel intel-card weekly-teaser" onClick={() => setBriefOpen(true)}>
-              <h2 className="hud-kicker mb-2">Weekly brief</h2>
-              <p className={`weekly-teaser-level weekly-teaser-${weekly.overall}`}>{weekly.overall.toUpperCase()}</p>
-              <p className="weekly-teaser-title">{weekly.topics[0]?.title || "No stories yet"}</p>
-              <p className="text-[0.9rem] text-[#8ea0c4]">{weekly.weekLabel}</p>
-            </button>
-            <SideCard title="TOP 10 today" items={ranked} empty="Nil" />
-            <AgencyCard agencies={agencies} />
-          </aside>
-        </main>
-      </div>
+    <div className="soc-app">
+      <IntelligenceWorkspace
+        articles={data?.articles ?? []}
+        agencies={agencies}
+        lastRefresh={data?.lastRefresh ?? null}
+        sourceHealth={data?.sourceHealth ?? []}
+        sourceProgress={sourceProgress}
+        busy={working}
+        pct={pct}
+        statusText={statusText}
+        failedCount={failedCount}
+        syncError={"key" in status && (status.key === "refreshFailed" || status.key === "loadFailedCache")}
+        onRefresh={() => void refresh()}
+        onRetrySource={(id) => void retrySource(id)}
+        onToggleRead={(article) => void toggleRead(article)}
+        onWeekly={() => setBriefOpen(true)}
+        onExport={() => setExportOpen(true)}
+      />
 
       {briefOpen ? (
         <WeeklyBriefSheet
@@ -571,14 +526,14 @@ export default function NewsApp() {
           <button
             type="button"
             className="absolute inset-0 cursor-default"
-            aria-label="Close export"
+            aria-label={t("closeExport")}
             onClick={() => !exporting && setExportOpen(false)}
           />
           <div className="hud-panel export-sheet">
-            <p className="hud-kicker">Secure export</p>
-            <h2 className="hud-title mt-1">Export report</h2>
+            <p className="hud-kicker">{t("exportKicker")}</p>
+            <h2 className="hud-title mt-1">{t("exportTitle")}</h2>
             <p className="mt-2 text-[1.02rem] leading-relaxed text-[#8ea0c4]">
-              手機：撳 Save PDF / Save Word。iPhone 開到檔後撳分享 → 儲存到檔案。Android 會入下載資料夾。
+              {t("exportHint")}
             </p>
             {exporting ? (
               <div className="export-progress">
@@ -597,7 +552,7 @@ export default function NewsApp() {
                 onClick={(event) => {
                   if (isMobileBrowser()) {
                     setExportOpen(false);
-                    setStatus("Opening PDF… iPhone 請撳分享 → 儲存到檔案");
+                    setStatus({ key: "openingPdf" });
                     return;
                   }
                   event.preventDefault();
@@ -605,7 +560,7 @@ export default function NewsApp() {
                 }}
                 className={`hud-btn hud-btn-primary flex min-h-12 items-center justify-center ${exporting ? "pointer-events-none opacity-60" : ""}`}
               >
-                {exporting ? `${pct}%` : "Save PDF"}
+                {exporting ? `${pct}%` : t("savePdf")}
               </a>
               <a
                 href={reportDownloadUrl("docx")}
@@ -615,7 +570,7 @@ export default function NewsApp() {
                 onClick={(event) => {
                   if (isMobileBrowser()) {
                     setExportOpen(false);
-                    setStatus("Opening Word… Android 會入下載；iPhone 可用分享儲存");
+                    setStatus({ key: "openingWord" });
                     return;
                   }
                   event.preventDefault();
@@ -623,7 +578,7 @@ export default function NewsApp() {
                 }}
                 className={`hud-btn flex min-h-12 items-center justify-center font-bold ${exporting ? "pointer-events-none opacity-60" : ""}`}
               >
-                {exporting ? `${pct}%` : "Save Word (.doc)"}
+                {exporting ? `${pct}%` : t("saveWord")}
               </a>
               <button
                 type="button"
@@ -631,11 +586,11 @@ export default function NewsApp() {
                 onClick={() => void exportReport("both")}
                 className="hud-btn save-both-desktop min-h-12 disabled:opacity-60"
               >
-                {exporting ? `${pct}%` : "Save both"}
+                {exporting ? `${pct}%` : t("saveBoth")}
               </button>
             </div>
             <p className="mt-4 text-[0.95rem] text-[#8ea0c4]">
-              如果沒有彈出分享／下載，直接開檔案：{" "}
+              {t("exportHintLinks")}{" "}
               <a href={reportDownloadUrl("pdf")} target="_blank" rel="noreferrer" className="text-[#3ce7ff] underline">
                 PDF
               </a>
@@ -645,7 +600,7 @@ export default function NewsApp() {
               </a>
             </p>
             <button type="button" className="mt-3 w-full text-[1.02rem] text-[#8ea0c4]" onClick={() => setExportOpen(false)} disabled={exporting}>
-              Cancel
+              {t("cancel")}
             </button>
           </div>
         </div>
@@ -702,8 +657,10 @@ function SideCard({
 
 function AgencyCard({
   agencies,
+  title,
 }: {
   agencies: { hkcert: AgencyItem[]; govcert: AgencyItem[]; cybersechub: AgencyItem[] };
+  title: string;
 }) {
   const groups = [
     { title: "HKCERT", items: agencies.hkcert },
@@ -713,7 +670,7 @@ function AgencyCard({
   if (!groups.length) return null;
   return (
     <div className="hud-panel intel-card">
-      <h2 className="hud-kicker mb-4">Agencies</h2>
+      <h2 className="hud-kicker mb-4">{title}</h2>
       <div className="space-y-4">
         {groups.map((group) => (
           <section key={group.title}>

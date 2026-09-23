@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 import { weeklyBriefDownloadUrl } from "@/lib/saveReport";
 import type { BriefLevel, WeeklyBrief } from "@/lib/weeklyBrief";
 import WeeklyPresent from "./WeeklyPresent";
@@ -9,12 +10,6 @@ function levelClass(level: BriefLevel): string {
   if (level === "red") return "brief-level brief-level-red";
   if (level === "amber") return "brief-level brief-level-amber";
   return "brief-level brief-level-green";
-}
-
-function levelWord(level: BriefLevel): string {
-  if (level === "red") return "RED · ACTION";
-  if (level === "amber") return "AMBER · DECIDE";
-  return "GREEN · AWARENESS";
 }
 
 export default function WeeklyBriefSheet({
@@ -30,7 +25,11 @@ export default function WeeklyBriefSheet({
   onClose: () => void;
   onExport: () => void;
 }) {
+  const { t } = useLocale();
   const [presenting, setPresenting] = useState(false);
+  const levelWord = (level: BriefLevel) =>
+    level === "red" ? t("levelRed") : level === "amber" ? t("levelAmber") : t("levelGreen");
+
   if (presenting) {
     return <WeeklyPresent brief={brief} onClose={() => setPresenting(false)} />;
   }
@@ -39,18 +38,18 @@ export default function WeeklyBriefSheet({
       <button
         type="button"
         className="absolute inset-0 cursor-default"
-        aria-label="Close weekly brief"
+        aria-label={t("closeBrief")}
         onClick={() => !saving && onClose()}
       />
       <div className="hud-panel brief-sheet">
-        <p className="hud-kicker">Management brief · last 7 days</p>
+        <p className="hud-kicker">{t("briefKicker")}</p>
         <div className="brief-head">
-          <h2 className="hud-title mt-1">Weekly brief</h2>
+          <h2 className="hud-title mt-1">{t("weeklyBrief")}</h2>
           <span className={levelClass(brief.overall)}>{levelWord(brief.overall)}</span>
         </div>
         <p className="brief-week">{brief.weekLabel}</p>
         <p className="brief-summary">{brief.summary}</p>
-        <p className="brief-scan">Scanned {brief.scanned} unique stories</p>
+        <p className="brief-scan">{t("briefScanned", { n: brief.scanned })}</p>
         {saving ? (
           <div className="export-progress">
             <p className="export-progress-pct">{pct}%</p>
@@ -75,17 +74,17 @@ export default function WeeklyBriefSheet({
                 <p className="brief-title brief-title-empty">{topic.title}</p>
               )}
               <p>
-                <strong>Why. </strong>
+                <strong>{t("briefWhy")}</strong>
                 {topic.why}
               </p>
               <p>
-                <strong>Ask. </strong>
+                <strong>{t("briefAsk")}</strong>
                 {topic.ask}
               </p>
               {topic.source ? (
                 <p className="brief-source">
                   {topic.source}
-                  {topic.related > 1 ? ` · ${topic.related} related` : ""}
+                  {topic.related > 1 ? t("briefRelated", { n: topic.related }) : ""}
                 </p>
               ) : null}
             </li>
@@ -101,10 +100,10 @@ export default function WeeklyBriefSheet({
             }}
             className="hud-btn hud-btn-primary min-h-12 disabled:opacity-60"
           >
-            Present to management
+            {t("briefPresent")}
           </button>
           <button type="button" disabled={saving} onClick={onExport} className="hud-btn min-h-12 disabled:opacity-60">
-            {saving ? `${pct}%` : "Save 1-page PDF"}
+            {saving ? `${pct}%` : t("briefSavePdf")}
           </button>
           <a
             href={weeklyBriefDownloadUrl()}
@@ -112,11 +111,11 @@ export default function WeeklyBriefSheet({
             rel="noopener"
             className="text-center text-[0.95rem] text-[#8ea0c4] underline"
           >
-            Direct PDF link
+            {t("briefDirectPdf")}
           </a>
         </div>
         <button type="button" className="mt-3 w-full text-[1.02rem] text-[#8ea0c4]" onClick={onClose} disabled={saving}>
-          Close
+          {t("close")}
         </button>
       </div>
     </div>

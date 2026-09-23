@@ -17,6 +17,17 @@ export type AgencyItem = {
   pubDate: string | null;
 };
 
+export type SourceHealth = {
+  id: string;
+  name: string;
+  ok: boolean;
+  error?: string | null;
+  count: number;
+  lastSync: string | null;
+  url?: string;
+  pending?: boolean;
+};
+
 export type CacheState = {
   articles: Article[];
   agencies: {
@@ -25,6 +36,7 @@ export type CacheState = {
     cybersechub: AgencyItem[];
   };
   lastRefresh: string | null;
+  sourceHealth?: SourceHealth[];
 };
 
 export type FeedSource = {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { COLLECT_TOTAL, asSnapshot, collectNews } from "@/lib/collect";
+import { COLLECT_TOTAL, asSnapshot, collectNews, collectOneSource } from "@/lib/collect";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,8 +11,14 @@ function sse(data: unknown): string {
 
 export async function POST(req: Request) {
   const wantJson = req.headers.get("accept")?.includes("application/json");
+  const body = await req.json().catch(() => null) as { sourceId?: string; skip?: string[] } | null;
+  if (body?.sourceId) {
+    const cache = await collectOneSource(body.sourceId);
+    return NextResponse.json({ snapshot: asSnapshot(cache) });
+  }
+
   if (wantJson) {
-    const cache = await collectNews();
+    const cache = await collectNews(undefined, { skip: body?.skip });
     return NextResponse.json({ snapshot: asSnapshot(cache) });
   }
 
@@ -26,7 +32,7 @@ export async function POST(req: Request) {
         const cache = await collectNews((progress) => {
           if (progress.ok === false) failed += 1;
           send({ type: "progress", ...progress });
-        });
+        }, { skip: body?.skip });
         send({
           type: "done",
           articles: cache.articles.length,
