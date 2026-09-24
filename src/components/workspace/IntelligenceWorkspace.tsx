@@ -545,11 +545,15 @@ export default function IntelligenceWorkspace({
   const showSparseHint = !busy && filtered.length > 0 && filtered.length < 3 && mergedFilters.time === "24h";
 
   return (
-    <div className="soc-root">
+    <div className="soc-root soc-cyber">
+      <div className="soc-cyber-fx" aria-hidden="true" />
       <header className="soc-header">
         <div className="soc-brand">
           <p className="soc-kicker">{t("kicker")}</p>
-          <h1>CyberGuard{t("appTitleRest")}</h1>
+          <h1>
+            <span className="soc-brand-mark">CyberGuard</span>
+            {t("appTitleRest")}
+          </h1>
         </div>
         <div className="soc-header-meta" title={t("syncTooltip")}>
           <span>{lastRefresh ? t("lastSync", { time: formatHkClock(lastRefresh) }) : t("lastSyncNever")}</span>

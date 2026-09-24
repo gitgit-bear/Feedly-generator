@@ -1414,23 +1414,92 @@ body {
 }
 
 .soc-root {
-  --soc-bg: #0c1118;
-  --soc-panel: #141b24;
-  --soc-panel-2: #1a222d;
-  --soc-line: rgba(154, 173, 196, 0.16);
-  --soc-text: #e7eef6;
-  --soc-muted: #8b9bb0;
-  --soc-accent: #7aa0c4;
-  --soc-critical: #d35a5a;
-  --soc-high: #d0893c;
-  --soc-ok: #3aa57a;
+  --soc-bg: #060a12;
+  --soc-panel: rgba(14, 22, 36, 0.82);
+  --soc-panel-2: rgba(18, 30, 48, 0.9);
+  --soc-line: rgba(56, 220, 255, 0.18);
+  --soc-text: #e8f4ff;
+  --soc-muted: #8aa3bd;
+  --soc-accent: #3ce7ff;
+  --soc-accent-dim: rgba(60, 231, 255, 0.14);
+  --soc-critical: #ff5d6c;
+  --soc-high: #ffb020;
+  --soc-ok: #2ee9c7;
+  --soc-depth: 0 10px 28px rgba(0, 0, 0, 0.45);
+  --soc-edge: inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35);
   position: relative;
   z-index: 2;
+  isolation: isolate;
   min-height: 100dvh;
   color: var(--soc-text);
   background: var(--soc-bg);
   font-size: 14px;
   line-height: 1.45;
+  perspective: 1400px;
+}
+
+.soc-cyber-fx {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(900px 480px at 12% -10%, rgba(60, 231, 255, 0.16), transparent 60%),
+    radial-gradient(700px 420px at 88% 0%, rgba(46, 233, 199, 0.08), transparent 55%),
+    linear-gradient(180deg, #070d18 0%, #05080f 55%, #04060c 100%);
+}
+
+.soc-cyber-fx::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(60, 231, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(60, 231, 255, 0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 75%);
+  transform: perspective(900px) rotateX(58deg) scale(1.35) translateY(-12%);
+  transform-origin: center top;
+  opacity: 0.55;
+  animation: soc-grid-drift 28s linear infinite;
+}
+
+.soc-cyber-fx::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  opacity: 0.35;
+  mix-blend-mode: multiply;
+}
+
+@keyframes soc-grid-drift {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 0 48px, 48px 0; }
+}
+
+.soc-cyber > *:not(.soc-cyber-fx) {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .soc-cyber-fx::before {
+    animation: none;
+  }
+  .soc-card,
+  .soc-metrics button,
+  .soc-btn {
+    transition: none !important;
+    transform: none !important;
+  }
 }
 
 .soc-mono,
@@ -1447,12 +1516,15 @@ body {
   flex-wrap: wrap;
   gap: 10px 16px;
   align-items: center;
-  padding: 10px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--soc-line);
-  background: #10161f;
+  background: linear-gradient(180deg, rgba(12, 20, 34, 0.92), rgba(8, 14, 24, 0.78));
+  backdrop-filter: blur(14px);
+  box-shadow: var(--soc-edge), 0 12px 40px rgba(0, 0, 0, 0.35);
   position: sticky;
   top: 0;
   z-index: 8;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 12px) 100%, 12px 100%, 0 calc(100% - 8px));
 }
 
 .soc-brand {
@@ -1461,16 +1533,27 @@ body {
 
 .soc-kicker {
   margin: 0;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--soc-muted);
+  color: var(--soc-accent);
+  text-shadow: 0 0 18px rgba(60, 231, 255, 0.35);
 }
 
 .soc-brand h1 {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: 1.2rem;
   font-weight: 650;
+}
+
+.soc-brand-mark {
+  font-family: var(--font-orbitron), var(--font-ibm), sans-serif;
+  letter-spacing: 0.04em;
+  background: linear-gradient(115deg, #f2fbff 10%, #3ce7ff 45%, #2ee9c7 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 10px rgba(60, 231, 255, 0.25));
 }
 
 .soc-header-meta {
@@ -1487,6 +1570,10 @@ body {
   gap: 6px;
   color: var(--soc-ok);
   font-weight: 650;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid rgba(46, 233, 199, 0.28);
+  background: rgba(46, 233, 199, 0.08);
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
 }
 
 .soc-live i,
@@ -1495,11 +1582,14 @@ body {
   height: 7px;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: 0 0 0 3px rgba(58, 165, 122, 0.15);
+  box-shadow: 0 0 0 3px rgba(46, 233, 199, 0.18), 0 0 10px currentColor;
 }
 
-.soc-live.is-busy {
+.soc-live.is-busy,
+.soc-live.is-degraded {
   color: var(--soc-high);
+  border-color: rgba(255, 176, 32, 0.35);
+  background: rgba(255, 176, 32, 0.08);
 }
 
 .soc-header-actions,
@@ -1519,20 +1609,33 @@ body {
 .soc-btn,
 .soc-icon-btn {
   border: 1px solid var(--soc-line);
-  background: var(--soc-panel-2);
+  background:
+    linear-gradient(180deg, rgba(36, 52, 74, 0.95), rgba(16, 26, 40, 0.95));
   color: var(--soc-text);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 0.4rem 0.7rem;
   min-height: 34px;
   font-size: 0.85rem;
   font-weight: 600;
+  box-shadow: var(--soc-edge), 0 6px 14px rgba(0, 0, 0, 0.28);
+  transform: translateZ(0);
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .soc-btn:hover,
 .soc-chip:hover,
-.soc-icon-btn:hover,
+.soc-icon-btn:hover {
+  border-color: rgba(60, 231, 255, 0.45);
+  box-shadow: var(--soc-edge), 0 0 0 1px rgba(60, 231, 255, 0.12), 0 8px 18px rgba(0, 0, 0, 0.35);
+}
+
+.soc-btn:hover,
+.soc-icon-btn:hover {
+  transform: translateY(-1px);
+}
+
 .soc-card:hover {
-  border-color: rgba(154, 173, 196, 0.4);
+  border-color: rgba(60, 231, 255, 0.4);
 }
 
 .soc-btn:focus-visible,
@@ -1547,8 +1650,10 @@ body {
 }
 
 .soc-btn-primary {
-  background: #2b3d55;
-  border-color: rgba(122, 160, 196, 0.45);
+  background: linear-gradient(135deg, rgba(60, 231, 255, 0.22), rgba(46, 233, 199, 0.12) 45%, #1a2c42);
+  border-color: rgba(60, 231, 255, 0.5);
+  color: #e9fbff;
+  text-shadow: 0 0 12px rgba(60, 231, 255, 0.25);
 }
 
 .soc-btn:disabled {
@@ -1563,42 +1668,67 @@ body {
 .soc-input {
   width: 100%;
   border: 1px solid var(--soc-line);
-  background: #0f151d;
+  background: linear-gradient(180deg, rgba(8, 14, 24, 0.95), rgba(6, 10, 18, 0.98));
   color: var(--soc-text);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 0.55rem 0.8rem;
   font-size: 0.92rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), inset 0 -12px 24px rgba(0, 0, 0, 0.25);
+}
+
+.soc-search:focus,
+.soc-input:focus {
+  border-color: rgba(60, 231, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 0 1px rgba(60, 231, 255, 0.18),
+    0 0 24px rgba(60, 231, 255, 0.12);
+  outline: none;
 }
 
 .soc-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px 16px;
+  gap: 10px;
+  padding: 12px 16px;
+  transform-style: preserve-3d;
 }
 
 .soc-metrics button {
   text-align: left;
   border: 1px solid var(--soc-line);
-  background: var(--soc-panel);
-  border-radius: 8px;
-  padding: 7px 9px;
+  background:
+    linear-gradient(165deg, rgba(28, 44, 66, 0.95) 0%, rgba(12, 20, 34, 0.92) 55%, rgba(8, 14, 24, 0.96) 100%);
+  border-radius: 2px;
+  padding: 10px 11px;
   color: var(--soc-muted);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   line-height: 1.25;
+  clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  box-shadow: var(--soc-edge), var(--soc-depth);
+  transform: rotateX(6deg) translateZ(0);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
 }
 
 .soc-metrics button strong {
   display: block;
   color: var(--soc-text);
-  font-size: 1.05rem;
+  font-family: var(--font-orbitron), ui-monospace, monospace;
+  font-size: 1.2rem;
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 16px rgba(60, 231, 255, 0.2);
+}
+
+.soc-metrics button:hover {
+  transform: rotateX(0deg) translateY(-3px) scale(1.01);
+  border-color: rgba(60, 231, 255, 0.45);
 }
 
 .soc-metrics button.is-on {
-  border-color: rgba(122, 160, 196, 0.55);
-  background: #1b2734;
+  border-color: rgba(60, 231, 255, 0.65);
+  background:
+    linear-gradient(165deg, rgba(40, 70, 90, 0.98), rgba(16, 36, 52, 0.95));
   color: var(--soc-text);
+  box-shadow: var(--soc-edge), 0 0 0 1px rgba(60, 231, 255, 0.2), 0 12px 28px rgba(0, 40, 60, 0.45);
 }
 
 .soc-quick-filters {
@@ -1627,14 +1757,17 @@ body {
 }
 
 .soc-badge-risk {
+  font-family: var(--font-orbitron), ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
-  font-weight: 650;
-  border-color: rgba(122, 160, 196, 0.35);
-  color: var(--soc-accent);
+  font-weight: 700;
+  color: #bff7ff;
+  border-color: rgba(60, 231, 255, 0.4);
+  background: rgba(60, 231, 255, 0.1);
+  box-shadow: 0 0 14px rgba(60, 231, 255, 0.15);
 }
 
 .soc-card.is-unread {
-  box-shadow: inset 2px 0 0 var(--soc-accent);
+  box-shadow: inset 2px 0 0 var(--soc-accent), var(--soc-edge), 0 8px 22px rgba(0, 0, 0, 0.32);
 }
 
 .soc-card.is-saved .soc-badge-saved,
@@ -1686,17 +1819,20 @@ body {
 
 .soc-chip {
   border: 1px solid var(--soc-line);
-  background: transparent;
+  background: rgba(10, 16, 28, 0.75);
   color: var(--soc-muted);
-  border-radius: 999px;
+  border-radius: 2px;
   padding: 0.22rem 0.65rem;
   font-size: 0.78rem;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
 .soc-chip-on {
-  background: #223044;
-  color: var(--soc-text);
-  border-color: rgba(122, 160, 196, 0.4);
+  background: rgba(60, 231, 255, 0.12);
+  color: #d7f8ff;
+  border-color: rgba(60, 231, 255, 0.45);
+  box-shadow: 0 0 16px rgba(60, 231, 255, 0.12);
 }
 
 .soc-link-btn {
@@ -1748,10 +1884,13 @@ body {
 
 .soc-filters,
 .soc-detail {
-  background: #10161f;
+  background:
+    linear-gradient(180deg, rgba(12, 20, 34, 0.88), rgba(8, 14, 24, 0.82));
   border-right: 1px solid var(--soc-line);
   padding: 12px;
   overflow: auto;
+  backdrop-filter: blur(10px);
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.03), inset -1px 0 0 rgba(0, 0, 0, 0.25);
 }
 
 .soc-detail {
@@ -1764,7 +1903,39 @@ body {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  background: linear-gradient(180deg, rgba(4, 8, 14, 0.2), rgba(4, 8, 14, 0.45));
+}
+
+.soc-card {
+  border: 1px solid var(--soc-line);
+  background:
+    linear-gradient(145deg, rgba(22, 34, 52, 0.92) 0%, rgba(12, 20, 34, 0.9) 48%, rgba(8, 14, 24, 0.95) 100%);
+  border-radius: 2px;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  box-shadow: var(--soc-edge), 0 8px 22px rgba(0, 0, 0, 0.32);
+  transform: translateZ(0);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+
+.soc-card:hover {
+  transform: translateY(-3px) rotateX(2deg);
+  box-shadow: var(--soc-edge), 0 0 0 1px rgba(60, 231, 255, 0.12), 0 16px 32px rgba(0, 0, 0, 0.4);
+}
+
+.soc-card.is-selected {
+  border-color: rgba(60, 231, 255, 0.55);
+  background:
+    linear-gradient(145deg, rgba(28, 48, 68, 0.96), rgba(14, 28, 44, 0.94));
+  box-shadow: var(--soc-edge), 0 0 0 1px rgba(60, 231, 255, 0.2), 0 0 28px rgba(60, 231, 255, 0.1);
+}
+
+.soc-card.is-critical {
+  border-left: 3px solid var(--soc-critical);
+  box-shadow: var(--soc-edge), -4px 0 18px rgba(255, 93, 108, 0.18);
 }
 
 .soc-filter-head,
@@ -1781,6 +1952,9 @@ body {
 .soc-modal h2 {
   margin: 0;
   font-size: 0.95rem;
+  font-family: var(--font-orbitron), var(--font-ibm), sans-serif;
+  letter-spacing: 0.04em;
+  color: #d9f6ff;
 }
 
 .soc-filter-group {
@@ -1799,24 +1973,6 @@ body {
 .soc-check {
   grid-template-columns: auto 1fr;
   align-items: center;
-}
-
-.soc-card {
-  border: 1px solid var(--soc-line);
-  background: var(--soc-panel);
-  border-radius: 10px;
-  padding: 8px 10px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.soc-card.is-selected {
-  border-color: rgba(122, 160, 196, 0.55);
-  background: #18222e;
-}
-
-.soc-card.is-critical {
-  border-left: 3px solid var(--soc-critical);
 }
 
 .soc-card h3,
@@ -1845,32 +2001,50 @@ body {
 .soc-sev {
   font-size: 0.68rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--soc-muted);
+  font-family: var(--font-orbitron), ui-monospace, monospace;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid currentColor;
+  background: rgba(0, 0, 0, 0.25);
+  clip-path: polygon(4px 0, 100% 0, 100% calc(100% - 4px), calc(100% - 4px) 100%, 0 100%, 0 4px);
 }
 
-.soc-sev-critical { color: var(--soc-critical); }
-.soc-sev-high { color: var(--soc-high); }
+.soc-sev-critical { color: var(--soc-critical); text-shadow: 0 0 10px rgba(255, 93, 108, 0.35); }
+.soc-sev-high { color: var(--soc-high); text-shadow: 0 0 10px rgba(255, 176, 32, 0.3); }
 .soc-sev-medium { color: #c9b056; }
 .soc-sev-low { color: var(--soc-ok); }
 
 .soc-badge {
   border: 1px solid var(--soc-line);
-  border-radius: 4px;
+  border-radius: 2px;
   padding: 0 5px;
   font-size: 0.68rem;
   color: var(--soc-muted);
+  background: rgba(8, 14, 24, 0.65);
+}
+
+.soc-badge-risk {
+  font-family: var(--font-orbitron), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #bff7ff;
+  border-color: rgba(60, 231, 255, 0.4);
+  background: rgba(60, 231, 255, 0.1);
+  box-shadow: 0 0 14px rgba(60, 231, 255, 0.15);
 }
 
 .soc-badge-warn {
   color: var(--soc-high);
-  border-color: rgba(208, 137, 60, 0.4);
+  border-color: rgba(255, 176, 32, 0.45);
 }
 
 .soc-watch {
   color: var(--soc-accent);
   font-size: 0.72rem;
   font-weight: 700;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 12px rgba(60, 231, 255, 0.35);
 }
 
 .soc-card-actions {
@@ -2083,10 +2257,13 @@ body {
   width: min(560px, 100%);
   max-height: min(86dvh, 820px);
   overflow: auto;
-  background: #141c26;
+  background:
+    linear-gradient(165deg, rgba(18, 30, 48, 0.96), rgba(8, 14, 24, 0.98));
   border: 1px solid var(--soc-line);
-  border-radius: 12px;
+  border-radius: 2px;
   padding: 16px;
+  box-shadow: var(--soc-edge), 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 40px rgba(60, 231, 255, 0.08);
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
 }
 
 .soc-modal-wide {
