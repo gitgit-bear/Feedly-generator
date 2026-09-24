@@ -37,6 +37,30 @@ export type CacheState = {
   };
   lastRefresh: string | null;
   sourceHealth?: SourceHealth[];
+  /** Official CVE enrichment from CISA / FIRST / NVD — keyed by CVE ID */
+  enrichment?: Record<
+    string,
+    {
+      cve: string;
+      cvss?: number;
+      epss?: number;
+      epssPercentile?: number;
+      kev: boolean;
+      kevDateAdded?: string;
+      vendor?: string;
+      product?: string;
+      sources: string[];
+    }
+  >;
+  persistBackend?: string;
+  workspaces?: Record<
+    string,
+    {
+      watchlist?: string[];
+      analystMap?: Record<string, unknown>;
+      updatedAt?: string;
+    }
+  >;
 };
 
 export type FeedSource = {

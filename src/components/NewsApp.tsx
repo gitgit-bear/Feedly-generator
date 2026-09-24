@@ -328,6 +328,18 @@ export default function NewsApp() {
   }, [pullFeeds, load, applySnapshot]);
 
   useEffect(() => {
+    if (!ready) return;
+    const tick = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      if (busyRef.current || exporting) return;
+      const last = data?.lastRefresh ? new Date(data.lastRefresh).getTime() : 0;
+      if (Date.now() - last < 15 * 60 * 1000) return;
+      void refresh();
+    }, 60_000);
+    return () => window.clearInterval(tick);
+  }, [ready, exporting, data?.lastRefresh, refresh]);
+
+  useEffect(() => {
     if (ready) return;
     const tick = window.setInterval(() => {
       if (realProgressRef.current) return;
@@ -496,6 +508,7 @@ export default function NewsApp() {
     <div className="soc-app">
       <IntelligenceWorkspace
         articles={data?.articles ?? []}
+        enrichment={data?.enrichment ?? {}}
         agencies={agencies}
         lastRefresh={data?.lastRefresh ?? null}
         sourceHealth={data?.sourceHealth ?? []}

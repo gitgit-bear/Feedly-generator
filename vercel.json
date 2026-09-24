@@ -11,6 +11,15 @@
     },
     "src/app/api/weekly-brief/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/cron/refresh/route.ts": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/refresh",
+      "schedule": "0 */6 * * *"
+    }
+  ]
 }

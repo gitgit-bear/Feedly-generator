@@ -230,7 +230,10 @@ function worseSeverity(a: Severity, b: Severity): Severity {
   return order.indexOf(a) >= order.indexOf(b) ? a : b;
 }
 
-export function clusterArticles(articles: Article[]): IntelCluster[] {
+export function clusterArticles(
+  articles: Article[],
+  enrichment: Record<string, { cvss?: number; epss?: number; epssPercentile?: number; kev?: boolean; vendor?: string; product?: string }> = {},
+): IntelCluster[] {
   const groups: Article[][] = [];
   for (const article of articles) {
     const cves = extractCves(`${article.title} ${article.description}`);
@@ -267,22 +270,41 @@ export function clusterArticles(articles: Article[]): IntelCluster[] {
       const hk = items.flatMap((a) => hkReasonsFor(a, `${a.title} ${a.description}`.toLowerCase()));
       const uniqueHk = [...new Set(hk)];
       const id = cves.length ? `cve:${cves.slice().sort().join(",")}` : `story:${titleTokens(newest.title).slice(0, 8).join("-") || newest.id}`;
+      const official = cves.map((cve) => enrichment[cve]).filter(Boolean);
+      const officialCvss = official.map((row) => row.cvss).filter((n): n is number => typeof n === "number");
+      const officialEpss = official.map((row) => row.epss).filter((n): n is number => typeof n === "number");
+      const officialPct = official.map((row) => row.epssPercentile).filter((n): n is number => typeof n === "number");
+      const officialKev = official.some((row) => row.kev);
+      const officialVendor = official.find((row) => row.vendor)?.vendor;
+      const officialProduct = official.find((row) => row.product)?.product;
+      const mergedCvss = officialCvss.length ? Math.max(...officialCvss) : cvss;
+      const mergedEpss = officialEpss.length ? Math.max(...officialEpss) : epss;
+      const mergedPct = officialPct.length ? Math.max(...officialPct) : percentile;
+      let mergedSeverity = items.reduce<Severity>(
+        (sev, a) => worseSeverity(sev, severityFrom(`${a.title} ${a.description}`.toLowerCase(), parseCvss(`${a.title} ${a.description}`.toLowerCase()))),
+        "unknown",
+      );
+      if (mergedCvss != null) {
+        if (mergedCvss >= 9) mergedSeverity = "critical";
+        else if (mergedCvss >= 7) mergedSeverity = worseSeverity(mergedSeverity, "high");
+        else if (mergedCvss >= 4) mergedSeverity = worseSeverity(mergedSeverity, "medium");
+      }
       return {
         id,
         title: newest.title,
         summary: (summarySource?.description || newest.description || "").slice(0, 280),
         articles: sorted,
         cves,
-        vendor: vendorHit.vendor,
-        products: vendorHit.products,
-        severity: items.reduce<Severity>((sev, a) => worseSeverity(sev, severityFrom(`${a.title} ${a.description}`.toLowerCase(), parseCvss(`${a.title} ${a.description}`.toLowerCase()))), "unknown"),
-        cvss,
-        epss,
-        epssPercentile: percentile,
-        kev: KEV_RE.test(blob),
-        kevMentioned: KEV_RE.test(blob),
+        vendor: vendorHit.vendor || officialVendor,
+        products: vendorHit.products.length ? vendorHit.products : officialProduct ? [officialProduct] : [],
+        severity: mergedSeverity,
+        cvss: mergedCvss,
+        epss: mergedEpss,
+        epssPercentile: mergedPct,
+        kev: officialKev || KEV_RE.test(blob),
+        kevMentioned: officialKev || KEV_RE.test(blob),
         exploitPublic: EXPLOIT_PUBLIC_RE.test(blob),
-        exploited: EXPLOITED_RE.test(blob) || KEV_RE.test(blob),
+        exploited: EXPLOITED_RE.test(blob) || officialKev || KEV_RE.test(blob),
         firstSeen: articleStamp(oldest),
         lastSeen: articleStamp(newest),
         sources: [...new Set(items.map((a) => a.source))],

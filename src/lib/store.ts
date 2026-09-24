@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 import { isGoogleNewsUrl } from "./googleNews";
+import { loadPersistentCache, savePersistentCache } from "./persist";
 import { dedupeStories } from "./rank";
 import type { Article, CacheState } from "./types";
 
@@ -21,34 +22,50 @@ const EMPTY: CacheState = {
   agencies: { hkcert: [], govcert: [], cybersechub: [] },
   lastRefresh: null,
   sourceHealth: [],
+  enrichment: {},
 };
 
 let memory: CacheState | null = null;
 
+function normalize(parsed: CacheState): CacheState {
+  return {
+    articles: parsed.articles ?? [],
+    agencies: parsed.agencies ?? EMPTY.agencies,
+    lastRefresh: parsed.lastRefresh ?? null,
+    sourceHealth: parsed.sourceHealth ?? [],
+    enrichment: parsed.enrichment ?? {},
+    persistBackend: parsed.persistBackend,
+  };
+}
+
 export async function loadCache(): Promise<CacheState> {
   if (memory) return memory;
+
+  const remote = await loadPersistentCache();
+  if (remote.state) {
+    memory = normalize(remote.state);
+    memory.persistBackend = remote.meta.backend;
+    return memory;
+  }
+
   try {
     const raw = await fs.readFile(cachePath(), "utf8");
-    const parsed = JSON.parse(raw) as CacheState;
-    memory = {
-      articles: parsed.articles ?? [],
-      agencies: parsed.agencies ?? EMPTY.agencies,
-      lastRefresh: parsed.lastRefresh ?? null,
-      sourceHealth: parsed.sourceHealth ?? [],
-    };
+    memory = normalize(JSON.parse(raw) as CacheState);
+    memory.persistBackend = "tmp";
     return memory;
   } catch {
-    return { ...EMPTY, agencies: { hkcert: [], govcert: [], cybersechub: [] } };
+    return { ...EMPTY, agencies: { hkcert: [], govcert: [], cybersechub: [] }, enrichment: {} };
   }
 }
 
 export async function saveCache(state: CacheState): Promise<void> {
-  memory = state;
+  const meta = await savePersistentCache(state);
+  memory = { ...state, persistBackend: meta.backend };
   try {
     await fs.mkdir(dataDir(), { recursive: true });
-    await fs.writeFile(cachePath(), JSON.stringify(state, null, 2), "utf8");
+    await fs.writeFile(cachePath(), JSON.stringify(memory, null, 2), "utf8");
   } catch {
-    /* serverless fs can be read-only besides /tmp; memory still holds the snapshot */
+    /* serverless tmp may fail; remote + memory still hold snapshot */
   }
 }
 

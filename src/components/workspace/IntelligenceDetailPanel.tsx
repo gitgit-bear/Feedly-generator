@@ -106,6 +106,7 @@ export default function IntelligenceDetailPanel({
         <div className="soc-detail-head">
           <h2>{t("topThreats")}</h2>
         </div>
+        <p className="soc-hint">{t("topThreatsScope")}</p>
         <label className="soc-select-label">
           {t("sortBy")}
           <select
@@ -190,7 +191,7 @@ export default function IntelligenceDetailPanel({
           <dt title={risk?.contributors.map((c) => `${c.label}: ${c.points}`).join(" · ") || t("riskMissing")}>
             {t("riskScore")}
           </dt>
-          <dd className="soc-mono">{risk ? risk.score : t("notAvailable")}</dd>
+          <dd className="soc-mono">{risk ? `${t("riskScore")}: ${risk.score}` : t("notAvailable")}</dd>
         </div>
         <div>
           <dt>{t("filterSeverity")}</dt>

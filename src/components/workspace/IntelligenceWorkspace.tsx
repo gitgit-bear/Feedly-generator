@@ -23,6 +23,7 @@ import {
   saveWatchlist,
   type AnalystRecord,
 } from "@/lib/analystStore";
+import { clustersToCsv, clustersToJson, downloadText } from "@/lib/exportIntel";
 import {
   DEFAULT_TIME,
   EMPTY_FILTERS,
@@ -60,6 +61,39 @@ type SourceProgress = {
   count?: number;
 };
 
+type EnrichmentMap = Record<
+  string,
+  {
+    cvss?: number;
+    epss?: number;
+    epssPercentile?: number;
+    kev?: boolean;
+    vendor?: string;
+    product?: string;
+  }
+>;
+
+const WORKSPACE_KEY = "cyberguard-workspace-id";
+
+function randomWorkspaceId(len = 16): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+function ensureWorkspaceId(): string {
+  try {
+    const existing = localStorage.getItem(WORKSPACE_KEY)?.trim() ?? "";
+    if (/^[a-zA-Z0-9_-]{8,64}$/.test(existing)) return existing;
+    const next = randomWorkspaceId(16);
+    localStorage.setItem(WORKSPACE_KEY, next);
+    return next;
+  } catch {
+    return randomWorkspaceId(16);
+  }
+}
+
 function relative(iso: string | null, t: (key: MessageKey, vars?: Record<string, string | number>) => string): string {
   if (!iso) return t("timeUnknown");
   const t0 = new Date(iso).getTime();
@@ -74,7 +108,6 @@ function relative(iso: string | null, t: (key: MessageKey, vars?: Record<string,
 
 function sortClusters(clusters: IntelCluster[], mode: SortMode, watchlist: string[]): IntelCluster[] {
   if (mode === "risk") {
-    // Risk score primary; prioritizeFeed as stable secondary grouping via watch/critical/kev before score ties break on recency inside sortByRisk
     return sortByRisk(prioritizeFeed(clusters, watchlist), watchlist, watchlistMatches);
   }
   if (mode === "epss") {
@@ -118,6 +151,7 @@ const METRIC_DEFS: Array<{ id: MetricId; label: MessageKey; tip: MessageKey }> =
 
 export default function IntelligenceWorkspace({
   articles,
+  enrichment,
   agencies,
   lastRefresh,
   sourceHealth,
@@ -134,6 +168,7 @@ export default function IntelligenceWorkspace({
   onExport,
 }: {
   articles: Article[];
+  enrichment?: EnrichmentMap;
   agencies: { hkcert: AgencyItem[]; govcert: AgencyItem[]; cybersechub: AgencyItem[] };
   lastRefresh: string | null;
   sourceHealth: SourceHealth[];
@@ -151,26 +186,83 @@ export default function IntelligenceWorkspace({
 }) {
   const { locale, setLocale, t } = useLocale();
   const searchRef = useRef<HTMLInputElement>(null);
+  const syncTimer = useRef<number | null>(null);
+  const skipNextSync = useRef(true);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<IntelFilters>({ ...EMPTY_FILTERS });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [limit, setLimit] = useState(60);
   const [mobilePanel, setMobilePanel] = useState<"filters" | "details" | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [healthOpen, setHealthOpen] = useState(false);
   const [watchOpen, setWatchOpen] = useState(false);
+  const [exportMenu, setExportMenu] = useState<"csv" | "json" | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("risk");
-  const [topSort, setTopSort] = useState<SortMode>("risk");
   const [moreId, setMoreId] = useState<string | null>(null);
   const [analystMap, setAnalystMap] = useState<Record<string, AnalystRecord>>({});
   const [watchlist, setWatchlist] = useState<string[]>([]);
   const [disabled, setDisabled] = useState<string[]>([]);
   const [nextIn, setNextIn] = useState(60);
+  const [workspaceId, setWorkspaceId] = useState("");
 
   useEffect(() => {
     setAnalystMap(loadAnalystMap());
     setWatchlist(loadWatchlist());
     setDisabled(loadDisabledSources());
+    const id = ensureWorkspaceId();
+    setWorkspaceId(id);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/workspace?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const remote = (await res.json()) as {
+          watchlist?: string[];
+          analystMap?: Record<string, AnalystRecord>;
+        };
+        if (cancelled) return;
+        if (Array.isArray(remote.watchlist) && remote.watchlist.length) {
+          const local = loadWatchlist();
+          const merged = [...local];
+          for (const term of remote.watchlist) {
+            const next = String(term).trim();
+            if (!next) continue;
+            if (!merged.some((item) => item.toLowerCase() === next.toLowerCase())) merged.push(next);
+          }
+          setWatchlist(merged);
+          saveWatchlist(merged);
+        }
+        if (remote.analystMap && typeof remote.analystMap === "object") {
+          const local = loadAnalystMap();
+          const merged = { ...remote.analystMap, ...local };
+          setAnalystMap(merged);
+          saveAnalystMap(merged);
+        }
+      } catch {
+        /* offline */
+      } finally {
+        skipNextSync.current = false;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!workspaceId || skipNextSync.current) return;
+    if (syncTimer.current) window.clearTimeout(syncTimer.current);
+    syncTimer.current = window.setTimeout(() => {
+      void fetch(`/api/workspace?id=${encodeURIComponent(workspaceId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ watchlist, analystMap }),
+      }).catch(() => undefined);
+    }, 800);
+    return () => {
+      if (syncTimer.current) window.clearTimeout(syncTimer.current);
+    };
+  }, [workspaceId, watchlist, analystMap]);
 
   useEffect(() => {
     if (busy) {
@@ -193,7 +285,7 @@ export default function IntelligenceWorkspace({
     [filters, parsed.filters],
   );
 
-  const clusters = useMemo(() => clusterArticles(articles), [articles]);
+  const clusters = useMemo(() => clusterArticles(articles, enrichment ?? {}), [articles, enrichment]);
   const savedIds = useMemo(
     () => new Set(Object.entries(analystMap).filter(([, row]) => row.saved).map(([id]) => id)),
     [analystMap],
@@ -210,7 +302,7 @@ export default function IntelligenceWorkspace({
   const metrics = useMemo(() => clusterMetrics(visibleBase, watchlist), [visibleBase, watchlist]);
   const shown = ordered.slice(0, limit);
   const selected = ordered.find((cluster) => cluster.id === selectedId) ?? null;
-  const topClusters = useMemo(() => sortClusters(visibleBase, topSort, watchlist).slice(0, 10), [visibleBase, topSort, watchlist]);
+  const topClusters = ordered.slice(0, 10);
   const vendors = useMemo(() => uniqueVendors(clusters), [clusters]);
   const products = useMemo(() => uniqueProducts(clusters), [clusters]);
   const sources = useMemo(() => uniqueSources(clusters), [clusters]);
@@ -218,7 +310,11 @@ export default function IntelligenceWorkspace({
   const watchHits = selected ? watchlistMatches(selected, watchlist) : [];
   const selectedRisk = selected ? computeRiskScore(selected, watchHits) : null;
   const indicator = detectIndicator(query);
-  const degraded = failedCount > 0 || (!!lastRefresh && hoursAgo(lastRefresh) > 20) || (!lastRefresh && !busy);
+  const pendingProgress = sourceProgress.filter((row) => row.pending || row.ok == null);
+  const readyProgress = sourceProgress.filter((row) => row.ok === true);
+  const failedProgress = sourceProgress.filter((row) => row.ok === false);
+  const effectiveFailed = !busy && sourceProgress.length ? failedProgress.length : failedCount;
+  const degraded = effectiveFailed > 0 || (!!lastRefresh && hoursAgo(lastRefresh) > 20) || (!lastRefresh && !busy);
 
   const healthRows: SourceHealth[] = useMemo(() => {
     const byId = new Map(sourceHealth.map((row) => [row.id, row]));
@@ -327,6 +423,33 @@ export default function IntelligenceWorkspace({
     }
   }
 
+  function exportClusters(format: "csv" | "json", scope: "current" | "selected") {
+    const rows =
+      scope === "selected" && selected
+        ? [selected]
+        : ordered;
+    if (!rows.length) return;
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    if (format === "csv") {
+      downloadText(`cyberguard-intel-${stamp}.csv`, clustersToCsv(rows, watchlist), "text/csv;charset=utf-8");
+    } else {
+      downloadText(
+        `cyberguard-intel-${stamp}.json`,
+        clustersToJson(rows, watchlist, analystMap),
+        "application/json",
+      );
+    }
+    setExportMenu(null);
+  }
+
+  function toggleAdvancedFilters() {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1024px)").matches) {
+      setMobilePanel((prev) => (prev === "filters" ? null : "filters"));
+      return;
+    }
+    setAdvancedOpen((prev) => !prev);
+  }
+
   const chips: Array<{ id: string; label: string; clear: () => void }> = [];
   if (mergedFilters.time && mergedFilters.time !== DEFAULT_TIME) {
     const key: MessageKey =
@@ -394,6 +517,8 @@ export default function IntelligenceWorkspace({
         setHealthOpen(false);
         setWatchOpen(false);
         setMoreId(null);
+        setExportMenu(null);
+        setAdvancedOpen(false);
         return;
       }
       if (typing) return;
@@ -414,12 +539,10 @@ export default function IntelligenceWorkspace({
     return () => window.removeEventListener("keydown", onKey);
   }, [ordered, selected]);
 
-  const pendingProgress = sourceProgress.filter((row) => row.pending || row.ok == null);
-  const readyProgress = sourceProgress.filter((row) => row.ok === true);
-  const failedProgress = sourceProgress.filter((row) => row.ok === false);
   const showSkeleton = !articles.length && busy;
   const showSyncError = Boolean(syncError) && !articles.length;
   const showEmpty = !showSkeleton && !showSyncError && shown.length === 0;
+  const showSparseHint = !busy && filtered.length > 0 && filtered.length < 3 && mergedFilters.time === "24h";
 
   return (
     <div className="soc-root">
@@ -430,10 +553,20 @@ export default function IntelligenceWorkspace({
         </div>
         <div className="soc-header-meta" title={t("syncTooltip")}>
           <span>{lastRefresh ? t("lastSync", { time: formatHkClock(lastRefresh) }) : t("lastSyncNever")}</span>
-          <span className={`soc-live ${busy ? "is-busy" : ""} ${degraded && !busy ? "is-degraded" : ""}`}>
+          <button
+            type="button"
+            className={`soc-live soc-live-btn ${busy ? "is-busy" : ""} ${degraded && !busy ? "is-degraded" : ""}`}
+            onClick={() => setHealthOpen(true)}
+            title={t("feedHealth")}
+          >
             <i aria-hidden="true" />
             {busy ? `${pct}%` : degraded ? t("liveDegraded") : t("live")}
-          </span>
+          </button>
+          {!busy && effectiveFailed > 0 ? (
+            <span className="soc-muted">
+              {t("sourcesFailed", { failed: effectiveFailed, total: healthRows.length || "—" })}
+            </span>
+          ) : null}
           {!busy ? <span className="soc-muted">{t("nextRefresh", { n: nextIn })}</span> : null}
         </div>
         <div className="soc-header-actions">
@@ -452,6 +585,24 @@ export default function IntelligenceWorkspace({
           <button type="button" className="soc-btn soc-btn-primary" onClick={onExport}>
             {t("export")}
           </button>
+          <div className="soc-export-menu">
+            <button type="button" className="soc-btn" onClick={() => setExportMenu(exportMenu === "csv" ? null : "csv")}>
+              {t("exportCsv")}
+            </button>
+            <button type="button" className="soc-btn" onClick={() => setExportMenu(exportMenu === "json" ? null : "json")}>
+              {t("exportJson")}
+            </button>
+            {exportMenu ? (
+              <div className="soc-export-menu-panel" role="menu">
+                <button type="button" onClick={() => exportClusters(exportMenu, "current")}>
+                  {t("exportCurrent")}
+                </button>
+                <button type="button" disabled={!selected} onClick={() => exportClusters(exportMenu, "selected")}>
+                  {t("exportSelected")}
+                </button>
+              </div>
+            ) : null}
+          </div>
           <button type="button" className="soc-btn" onClick={onRefresh} disabled={busy}>
             {busy ? `${pct}%` : t("refresh")}
           </button>
@@ -564,10 +715,10 @@ export default function IntelligenceWorkspace({
         </label>
         <button
           type="button"
-          className="soc-btn"
-          onClick={() => setMobilePanel((prev) => (prev === "filters" ? null : "filters"))}
+          className={`soc-btn ${advancedOpen || mobilePanel === "filters" ? "soc-btn-primary" : ""}`}
+          onClick={toggleAdvancedFilters}
         >
-          {t("advancedFilters")}
+          {t("advancedFiltersToggle")}
         </button>
       </div>
 
@@ -585,12 +736,21 @@ export default function IntelligenceWorkspace({
         </div>
       ) : null}
 
-      {(busy || failedCount > 0) && articles.length > 0 ? (
+      {showSparseHint ? (
+        <div className="soc-sparse-hint">
+          <span>{t("sparseFeedHint")}</span>
+          <button type="button" className="soc-btn" onClick={() => setFilter("time", "7d")}>
+            {t("widenTo7d")}
+          </button>
+        </div>
+      ) : null}
+
+      {(busy || effectiveFailed > 0) && articles.length > 0 ? (
         <div className="soc-loadbar">
           {busy ? <p>{t("showingCached")}</p> : null}
-          {failedCount > 0 ? (
+          {effectiveFailed > 0 ? (
             <p>
-              {t("retryFailed", { n: failedCount })}{" "}
+              {t("sourcesFailed", { failed: effectiveFailed, total: healthRows.length || "—" })}{" "}
               <button type="button" className="soc-link-btn" onClick={onRefresh}>
                 {t("retry")}
               </button>
@@ -643,8 +803,8 @@ export default function IntelligenceWorkspace({
         </button>
       </div>
 
-      <div className={`soc-grid ${mobilePanel ? `show-${mobilePanel}` : ""}`}>
-        <aside className="soc-filters">
+      <div className={`soc-grid ${!advancedOpen ? "no-filters" : ""} ${mobilePanel ? `show-${mobilePanel}` : ""}`}>
+        <aside className={`soc-filters ${!advancedOpen ? "is-collapsed" : ""}`}>
           <div className="soc-filter-head">
             <h2>{t("advancedFilters")}</h2>
             <span>{t("activeFilters", { n: activeCount })}</span>
@@ -800,6 +960,7 @@ export default function IntelligenceWorkspace({
               const hits = watchlistMatches(cluster, watchlist);
               const rec = analystMap[cluster.id];
               const risk = computeRiskScore(cluster, hits);
+              const riskTitle = risk.contributors.map((c) => `${c.label}: ${c.points}`).join(" · ");
               const metaParts: string[] = [];
               if (cluster.cvss != null) metaParts.push(`CVSS ${cluster.cvss.toFixed(1)}`);
               if (cluster.epss != null) metaParts.push(`EPSS ${(cluster.epss * 100).toFixed(0)}%`);
@@ -818,8 +979,8 @@ export default function IntelligenceWorkspace({
                 >
                   <div className="soc-card-top">
                     <span className={`soc-sev soc-sev-${cluster.severity}`}>{cluster.severity.toUpperCase()}</span>
-                    <span className="soc-badge soc-badge-risk" title={t("riskScore")}>
-                      {risk.score}
+                    <span className="soc-badge soc-badge-risk" title={riskTitle || t("riskScore")}>
+                      {t("riskLabel", { score: risk.score })}
                     </span>
                     {rec?.status && rec.status !== "new" ? (
                       <span className="soc-badge">
@@ -842,7 +1003,7 @@ export default function IntelligenceWorkspace({
                     {cluster.sources[0] ?? "—"} · {relative(cluster.lastSeen, t)}
                     {hits.length ? ` · ${t("watchMatchDetail", { detail: watchlistMatchDetail(cluster, hits) })}` : ""}
                   </p>
-                  <div className="soc-card-actions">
+                  <div className="soc-card-actions is-compact">
                     <button
                       type="button"
                       onClick={(event) => {
@@ -946,8 +1107,8 @@ export default function IntelligenceWorkspace({
             watchMatches={watchHits}
             agencies={agencies}
             topClusters={topClusters}
-            topSort={topSort}
-            onTopSort={setTopSort}
+            topSort={sortMode}
+            onTopSort={setSortMode}
             risk={selectedRisk}
             onClose={() => setMobilePanel(null)}
             onAddWatchTerm={addWatchTerm}
@@ -982,6 +1143,12 @@ export default function IntelligenceWorkspace({
         )}
       </div>
 
+      <div className="soc-mobile-refresh">
+        <button type="button" className="soc-btn soc-btn-primary" onClick={onRefresh} disabled={busy}>
+          {busy ? `${pct}%` : t("refresh")}
+        </button>
+      </div>
+
       {healthOpen ? (
         <FeedHealthPanel
           rows={healthRows}
@@ -999,6 +1166,8 @@ export default function IntelligenceWorkspace({
       {watchOpen ? (
         <WatchlistManager
           items={watchlist}
+          workspaceId={workspaceId}
+          analystMap={analystMap}
           onChange={(items) => {
             setWatchlist(items);
             saveWatchlist(items);

@@ -120,12 +120,21 @@ export async function collectNews(
 
   const merged = await mergeArticles(incoming);
   const unwrapped = await unwrapArticleList(merged.articles, 8000);
+  const articles = dedupeStories(unwrapped.map(polishGoogleNewsArticle));
+  const { collectArticleCves, enrichCves } = await import("@/lib/enrich");
+  let enrichment = previous.enrichment ?? {};
+  try {
+    enrichment = { ...enrichment, ...(await enrichCves(collectArticleCves(articles))) };
+  } catch {
+    /* keep prior enrichment */
+  }
   const cache: CacheState = {
     ...merged,
-    articles: dedupeStories(unwrapped.map(polishGoogleNewsArticle)),
+    articles,
     agencies,
     lastRefresh: now,
     sourceHealth: health,
+    enrichment,
   };
   await saveCache(cache);
   return cache;
